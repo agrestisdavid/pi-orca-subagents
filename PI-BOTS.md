@@ -126,10 +126,13 @@ mark synthetic data and require no model calls.
 
 The acceptance matrix and evidence paths are recorded in
 `../../skills/pi-bots/references/native-tui-validation-2026-09-09.md`.
-Tab detach/reattach, parent reload, lost local connections/receipts and adapter
-process restart are tested. A complete desktop Orca restart into a new runtime
-has not been practically verified, because other user work is open in that
-runtime. No claim of full acceptance for that case is made. If Orca fails to
+Tab detach/reattach, parent reload, lost local connections/receipts, adapter
+process restart and a complete Orca desktop restart into a new runtime are
+tested. The desktop restart retained the exact Pi process, PTY and session;
+its original supervisor question and dispatch completed after reconnection.
+An actual outage also confirmed disconnected health while Pi kept running.
+Orca status exit success alone is insufficient: the adapter and dispatch
+preflight require the returned runtime to be reachable. If Orca fails to
 restore the original coordinator/assignee panes, stable dispatch actor
 restoration is the missing interface; a viewer or new dispatch is not a substitute.
 
