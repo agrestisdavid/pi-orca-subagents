@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import {workflowControlRoot,callWorkflowHost} from "../tui-host/workflow-host-client.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -21,6 +22,13 @@ const REQUESTS_DIR = "requests";
 const REPLIES_DIR = "replies";
 export const NATIVE_SUPERVISOR_TOOL_NAME = "subagent_supervisor";
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const supervisorExecutors = new WeakMap<SubagentState, (params: any) => Promise<any>>();
+/** Same owner-scoped implementation as subagent_supervisor, including discovery and journaling. */
+export async function executeNativeSupervisor(state: SubagentState, params: unknown): Promise<any> {
+  const execute = supervisorExecutors.get(state);
+  if (!execute) throw new Error("The native supervisor channel is not active for this parent.");
+  return execute(params);
+}
 const DEFAULT_ASK_TIMEOUT_MS = 10 * 60 * 1000;
 const CHANNEL_POLL_MS = Math.min(POLL_INTERVAL_MS, 500);
 const CHANNEL_SAFETY_POLL_MS = 5000;
@@ -593,6 +601,12 @@ function buildParentSupervisorTool(pi: ExtensionAPI, pending: Map<string, Pendin
 			}
 			if (input.action === "reply") {
 				const request = resolvePendingRequest(pending, input);
+				const root=!process.env.PI_BOTS_WORKFLOW_HOST&&request.orchestratorSessionId?workflowControlRoot(request.orchestratorSessionId,request.runId):undefined;
+				if(root){
+					const result=await callWorkflowHost(root,{version:1,requestId:"supervisor-"+_id+"-"+request.id,method:"supervisor",params:input});
+					onLifecycle(request,"resolved");pending.delete(request.id);
+					return {content:[{type:"text",text:result.text}],details:result.details};
+				}
 				const reply = writeReply(request, input.message ?? "");
 				appendSupervisorReplyEntry(pi, request, reply);
 				onLifecycle(request, "resolved");
@@ -695,7 +709,9 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 	};
 
 	const registerParentTools = (): void => {
-		if (!hasTool(pi, NATIVE_SUPERVISOR_TOOL_NAME)) pi.registerTool(buildParentSupervisorTool(pi, pending, state, observeRequestLifecycle, () => poll(), runState));
+		const tool = buildParentSupervisorTool(pi, pending, state, observeRequestLifecycle, () => poll(), runState);
+		supervisorExecutors.set(state, params => tool.execute("pi-bots-supervisor", params));
+		if (!hasTool(pi, NATIVE_SUPERVISOR_TOOL_NAME)) pi.registerTool(tool);
 	};
 
 	const cleanupStaleChannelsIfDue = (): void => {
@@ -877,6 +893,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 			}
 		},
 		dispose: () => {
+			supervisorExecutors.delete(state);
 			started = false;
 			try {
 				rootWatcher?.close();

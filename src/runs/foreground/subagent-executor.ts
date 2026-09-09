@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import {currentChildExecution} from "../../api/child-execution.ts";
+import {workflowControlRoot,callWorkflowHost} from "../../tui-host/workflow-host-client.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -5958,6 +5960,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const requestCwd = resolveRequestedCwd(ctx.cwd, directParams.cwd);
 		const paramsWithResolvedCwd = directParams.cwd === undefined ? directParams : { ...directParams, cwd: requestCwd };
 		const action = paramsWithResolvedCwd.action;
+		if(!process.env.PI_BOTS_WORKFLOW_HOST && ["status","steer","interrupt","stop"].includes(String(action)) && (paramsWithResolvedCwd.id||paramsWithResolvedCwd.runId||paramsWithResolvedCwd.dir)){
+			const location=resolveAsyncRunLocation(paramsWithResolvedCwd,DIRS.async,DIRS.results);
+			const id=location.resolvedId??paramsWithResolvedCwd.id??paramsWithResolvedCwd.runId;
+			const root=id?workflowControlRoot(resolveCurrentSessionId(ctx.sessionManager),id):undefined;
+			if(root){
+				const data=await callWorkflowHost(root,{version:1,requestId:"control-"+_id,method:action,params:{...paramsWithResolvedCwd,id}});
+				return {content:[{type:"text",text:data.text??JSON.stringify(data)}],details:data.details??{mode:"management",results:[]}};
+			}
+		}
 		let requestSessionId = "";
 		let requestPiSessionId: string | undefined;
 		let requestParentModel: ParentModel | undefined;
@@ -6317,6 +6328,23 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				return withBudget(inspectSubagentStatus(paramsWithResolvedCwd, omitUndefinedProperties({ state: deps.state, nested: nestedScope, sessionRoots, abandonedSlotReleaseAfterMs: resolveAbandonedSlotReleaseAfterMs(deps.config.capacity?.abandonedSlotReleaseAfterMs) })));
 			}
 			if (action === "resume") {
+				if (!currentChildExecution()) {
+					const location = resolveAsyncRunLocation(paramsWithResolvedCwd, DIRS.async, DIRS.results);
+					if (location.asyncDir && fs.existsSync(path.join(location.asyncDir, "tui"))) {
+						const status = readStatus(location.asyncDir);
+						if (status?.sessionId !== resolveCurrentSessionId(ctx.sessionManager)) throw new Error("Managed TUI resume requires its original parent session.");
+						const request: any = {params: {...paramsWithResolvedCwd, id: status.runId}, ctx, signal};
+						deps.pi.events.emit("pi-bots:managed-resume:v1", request);
+						if (!request.result) throw new Error("This child has a retained Pi TUI. Load Pi Bots and resume through its original workflow; an uncoordinated session writer is blocked.");
+						return await request.result;
+					}
+				}
+				if(!process.env.PI_BOTS_WORKFLOW_HOST){
+					const location=resolveAsyncRunLocation(paramsWithResolvedCwd,DIRS.async,DIRS.results);
+					const id=location.resolvedId??paramsWithResolvedCwd.id??paramsWithResolvedCwd.runId;
+					const root=id?workflowControlRoot(resolveCurrentSessionId(ctx.sessionManager),id):undefined;
+					if(root){const data=await callWorkflowHost(root,{version:1,requestId:"control-"+_id,method:"resume",params:{...paramsWithResolvedCwd,id,childExecution:currentChildExecution()}});return {content:[{type:"text",text:data.text}],details:data.details};}
+				}
 				return resumeAsyncRun(omitUndefinedProperties({ params: paramsWithResolvedCwd, requestCwd, ctx, deps, parentModel: requestParentModel, signal }));
 			}
 			if (action === "steer") {

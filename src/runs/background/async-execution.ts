@@ -69,6 +69,7 @@ import {
 import { inheritedNestedParentAddressOf, inheritedNestedRouteOf, nestedResultsPath, nestedSummaryFromAsyncStatus, writeNestedEvent } from "../shared/nested-events.ts";
 import type { ChildRuntimeConfig } from "../shared/child-runtime-config.ts";
 import { childSessionFactoryModule } from "../shared/child-session.ts";
+import { currentChildExecution } from "../../api/child-execution.ts";
 import { inheritedChildRuntime } from "../shared/child-launch.ts";
 import { resultFilePath } from "./result-files.ts";
 import { validateToolBudgetConfig } from "../shared/tool-budget.ts";
@@ -593,6 +594,8 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 		const proc = spawn(nodeCommand, [...preload, jitiCliPath, runner, cfgPath], {
 			cwd,
 			...backgroundProcessOptions(),
+			// The TUI broker survives a parent reload; its native owner must survive too.
+			...((cfg as {childExecution?: unknown}).childExecution ? { detached: true } : {}),
 			stdio: ["ignore", stdoutFd ?? "ignore", stderrFd ?? "ignore"],
 			env: {
 				...omitExtensionBindingsEnv(process.env),
@@ -1359,6 +1362,7 @@ export function executeAsyncChain(
 				...(capabilityCeiling ? { capabilityCeiling } : {}),
 				piPackageRoot,
 				childSessionFactoryModule: childSessionFactoryModule(),
+				childExecution: currentChildExecution(),
 				inheritedChildRuntime: inheritedChildRuntime(ctx.childRuntime),
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,
@@ -1969,6 +1973,7 @@ export function executeAsyncSingle(
 				...(capabilityCeiling ? { capabilityCeiling } : {}),
 				piPackageRoot,
 				childSessionFactoryModule: childSessionFactoryModule(),
+				childExecution: currentChildExecution(),
 				inheritedChildRuntime: inheritedChildRuntime(ctx.childRuntime),
 				worktreeSetupHook,
 				worktreeSetupHookTimeoutMs,

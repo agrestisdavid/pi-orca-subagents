@@ -1,4 +1,7 @@
 import * as path from "node:path";
+import {requestReceiptFile,claimRequest,settleRequest,readRequestReceipt} from "../api/request-receipts.mjs";
+import {startWorkflowHost,workflowControlRoot,callWorkflowHost,recoverWorkflowStartReply} from "../tui-host/workflow-host-client.ts";
+import {readJson} from "../tui-host/protocol.mjs";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Compile } from "typebox/compile";
@@ -31,7 +34,7 @@ export const SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
 export const SUBAGENT_RPC_READY_EVENT = "subagents:rpc:v1:ready";
 export const SUBAGENT_RPC_REPLY_EVENT_PREFIX = "subagents:rpc:v1:reply:";
 
-export const SUBAGENT_RPC_METHODS = ["ping", "status", "manage", "spawn", "steer", "interrupt", "stop", "resume"] as const;
+export const SUBAGENT_RPC_METHODS = ["ping", "status", "manage", "spawn", "steer", "interrupt", "stop", "resume", "supervisor", "receipt"] as const;
 export type SubagentRpcMethod = typeof SUBAGENT_RPC_METHODS[number];
 
 export interface SubagentRpcRequestEnvelope {
@@ -319,6 +322,9 @@ interface RegisterSubagentRpcBridgeOptions {
 	state?: SubagentState;
 }
 
+import { withChildExecution } from "../api/child-execution.ts";
+import { executeNativeSupervisor } from "../intercom/native-supervisor-channel.ts";
+
 class SubagentRpcError extends Error {
 	readonly code: SubagentRpcErrorCode;
 
@@ -442,6 +448,9 @@ function pingData(ctx: ExtensionContext | null) {
 		version: SUBAGENT_RPC_PROTOCOL_VERSION,
 		methods: [...SUBAGENT_RPC_METHODS],
 		capabilities: {
+			childExecution: {version: 1, types: ["orca-tui"]},
+			durableRequests: {version:1, methods:["spawn","resume","supervisor"]},
+			supervisor: {version: 1, canonical: true},
 			status: true,
 			statusProjection: { version: 1, untargeted: "in-memory-when-ready", targeted: "executor" },
 			managementActions: [...SUBAGENT_RPC_MANAGEMENT_ACTIONS],
@@ -704,12 +713,35 @@ async function handleRequest(
 	const ctx = options.getContext();
 	if (request.method === "ping") return pingData(ctx);
 	if (!ctx) throw new SubagentRpcError("no_active_session", "No active extension context for subagent RPC.");
+	if(request.method==="receipt"){
+		const params=assertRecordParams(request.params,"receipt");
+		const sessionId=resolveCurrentSessionId(ctx.sessionManager);
+		const file=requestReceiptFile(path.dirname(options.asyncDirRoot ?? DIRS.async),sessionId,assertRequestId(params.requestId));
+		const record=readJson(file);
+		if(record?.state==="pending"){
+			const recovered=recoverWorkflowStartReply(record.request,sessionId);
+			if(recovered)settleRequest(file,recovered);
+		}
+		return readRequestReceipt(file);
+	}
+	if (request.method === "supervisor") {
+		const params = assertRecordParams(request.params, "supervisor");
+		if (!["pending", "reply", "status"].includes(String(params.action))) throw new SubagentRpcError("invalid_params", "Unsupported supervisor action.");
+		if (params.action === "reply" && (typeof params.replyTo !== "string" || typeof params.message !== "string" || !params.message.trim())) throw new SubagentRpcError("invalid_params", "Supervisor reply requires replyTo and message.");
+		if(!options.state)throw new SubagentRpcError("no_active_session","Native supervisor state is unavailable.");
+		const result=await executeNativeSupervisor(options.state, params);failIfToolError(result);return dataFromToolResult(result);
+	}
 
 	if (request.method === "manage") {
 		return executeChecked(options, ctx, request.requestId, request.method, manageParams(request.params));
 	}
 	if (request.method === "spawn") {
-		return executeChecked(options, ctx, request.requestId, request.method, spawnParams(request.params));
+		const { childExecution, ...params } = assertRecordParams(request.params, "spawn");
+		return withChildExecution(childExecution, () => {
+			const normalized=spawnParams(params);
+			if(childExecution&&normalized.workflowScript&&!process.env.PI_BOTS_WORKFLOW_HOST)return startWorkflowHost({...request,params:{...normalized,childExecution}},ctx);
+			return executeChecked(options, ctx, request.requestId, request.method, normalized);
+		});
 	}
 	if (request.method === "status") {
 		const statusParams = normalizeStatusParams(request.params);
@@ -756,10 +788,18 @@ async function handleRequest(
 		return executeChecked(options, ctx, request.requestId, request.method, { action: "interrupt", ...normalizeTargetParams(request.params, "interrupt") });
 	}
 	if (request.method === "stop") {
+		if(!process.env.PI_BOTS_WORKFLOW_HOST){
+			const params=assertRecordParams(request.params,"stop");
+			const location=resolveAsyncRunLocation(params, options.asyncDirRoot ?? DIRS.async, options.resultsDir ?? DIRS.results);
+			const runId=location.resolvedId??String(params.id??params.runId??"");
+			const root=workflowControlRoot(resolveCurrentSessionId(ctx.sessionManager),runId);
+			if(root)return callWorkflowHost(root,request);
+		}
 		return stopAsyncRun(request.params, options, ctx);
 	}
 	if (request.method === "resume") {
-		return executeChecked(options, ctx, request.requestId, request.method, resumeParams(request.params));
+		const { childExecution, ...params } = assertRecordParams(request.params, "resume");
+		return withChildExecution(childExecution, () => executeChecked(options, ctx, request.requestId, request.method, resumeParams(params)));
 	}
 	throw new SubagentRpcError("unsupported_method", `Unsupported subagent RPC method: ${String(request.method)}`);
 }
@@ -817,18 +857,32 @@ export function registerSubagentRpcBridge(options: RegisterSubagentRpcBridgeOpti
 	const fleetKeys: FleetKeyState = { sessionId: null, next: 0, keys: new Map() };
 	const unsubscribe = options.events.on(SUBAGENT_RPC_REQUEST_EVENT, async (raw) => {
 		let request: SubagentRpcRequestEnvelope | undefined;
+		let receiptFile: string | undefined;
 		try {
 			request = parseRequest(raw);
+			if((["spawn","resume"].includes(request.method)&&isRecord(request.params)&&request.params.childExecution) || request.method==="supervisor"){
+				const ctx=options.getContext();if(!ctx)throw new SubagentRpcError("no_active_session","No active native request owner.");
+				const file=requestReceiptFile(path.dirname(options.asyncDirRoot ?? DIRS.async),resolveCurrentSessionId(ctx.sessionManager),request.requestId);
+				const claim=claimRequest(file,request);
+				if(!claim.claimed){if(claim.reply)options.events.emit(subagentRpcReplyEvent(request.requestId),claim.reply);return;}
+				receiptFile=file;
+			}
 			const data = await handleRequest(request, options, fleetKeys);
-			options.events.emit(subagentRpcReplyEvent(request.requestId), {
+			const reply = {
 				version: SUBAGENT_RPC_PROTOCOL_VERSION,
 				requestId: request.requestId,
 				method: request.method,
 				success: true,
 				data,
-			} satisfies SubagentRpcReplyEnvelope);
+			} satisfies SubagentRpcReplyEnvelope;
+			if(receiptFile)settleRequest(receiptFile,reply);
+			options.events.emit(subagentRpcReplyEvent(request.requestId), reply);
 		} catch (error) {
+			// An elapsed transport deadline cannot decide a native mutation's
+			// outcome. Keep its original durable claim and late-receipt path.
+			if(receiptFile&&(error as any)?.uncertain)return;
 			const reply = errorReply(request ?? raw, error);
+			if(receiptFile)settleRequest(receiptFile,reply);
 			options.events.emit(subagentRpcReplyEvent(reply.requestId), reply);
 		}
 	});

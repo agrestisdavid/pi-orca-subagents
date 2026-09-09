@@ -289,9 +289,12 @@ export function resolvePermissionSystemExtension(): string | undefined {
 	return undefined;
 }
 
+import { childExecutionRequirements } from "../../api/child-execution.ts";
+
 export function resolvePiLaunchToolPlan(
 	input: ResolvePiLaunchToolPlanInput,
 ): PiLaunchToolPlan {
+	input = childExecutionRequirements(input);
 	const capabilityCeiling = intersectSubagentCapabilityCeilings(
 		input.capabilityCeiling,
 		input.inheritedCapabilityCeiling,

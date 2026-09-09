@@ -112,6 +112,9 @@ export interface ChildSessionFactory {
 export type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
 
 export interface DefaultChildSessionFactoryOptions {
+  /** Host integration: mount the real interactive UI on this exact session. */
+  onSessionCreated?: (session: any, services: any) => Promise<void>;
+  bindMode?: "print" | "interactive";
 	/**
 	 * Loads the pi package the sessions are created from. The parent process
 	 * uses the host's in-process module; the detached runner imports the
@@ -248,7 +251,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					sessionStartEvent: { type: "session_start", reason: "startup" },
 				});
 				try {
-					await session.bindExtensions({
+					if (options.onSessionCreated) await options.onSessionCreated(session, {cwd: launch.cwd, agentDir, modelRuntime, settingsManager, resourceLoader: loader, diagnostics: []});
+					if (options.bindMode !== "interactive") await session.bindExtensions({
 						mode: "print",
 						onError: (error) => launch.onExtensionError?.({ extensionPath: error.extensionPath, event: error.event, error: error.error }),
 					});

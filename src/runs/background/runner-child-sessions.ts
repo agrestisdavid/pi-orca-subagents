@@ -10,8 +10,12 @@
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createDefaultChildSessionFactory, type ChildSessionFactory } from "../shared/child-session.ts";
+import { setRunnerChildExecution, type ChildExecution } from "../../api/child-execution.ts";
 
 export interface RunnerChildSessionConfig {
+  childExecution?: ChildExecution;
+  asyncDir?: string;
+  piPackageRoot?: string;
 	/** Test seam: module whose default export is a `ChildSessionFactory`, or a function returning one. */
 	childSessionFactoryModule?: string;
 }
@@ -21,6 +25,11 @@ function isChildSessionFactory(value: unknown): value is ChildSessionFactory {
 }
 
 export async function loadRunnerChildSessionFactory(config: RunnerChildSessionConfig): Promise<ChildSessionFactory> {
+  setRunnerChildExecution(config.childExecution);
+  if (config.childExecution) {
+    const { createTuiChildSessionFactory } = await import("../../tui-host/factory.ts");
+    return createTuiChildSessionFactory(config as Required<Pick<RunnerChildSessionConfig, "childExecution" | "asyncDir" | "piPackageRoot">>);
+  }
 	if (!config.childSessionFactoryModule) return createDefaultChildSessionFactory();
 	const loaded = await import(pathToFileURL(path.resolve(config.childSessionFactoryModule)).href) as { default?: unknown };
 	const candidate = typeof loaded.default === "function" ? (loaded.default as () => unknown)() : loaded.default;

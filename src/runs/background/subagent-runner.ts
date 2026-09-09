@@ -6,6 +6,8 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import { arbitrateCompletionGuardRescue, createTaskMutationArbiter } from "../shared/llm-intent-arbiter.ts";
+import {currentChildExecution} from "../../api/child-execution.ts";
+import {arbitrateTuiTask} from "../../tui-host/arbiter-client.ts";
 
 // Detached runners skip Pi's CLI proxy setup. Keep fetch on the same Undici dispatcher.
 function ensureProxyAwareHttpDispatcher(): void {
@@ -203,6 +205,7 @@ interface SubagentRunConfig {
 	piPackageRoot?: string;
 	/** Test seam: module the runner imports its `ChildSessionFactory` from. */
 	childSessionFactoryModule?: string;
+	childExecution?: import("../../api/child-execution.ts").ChildExecution;
 	/** The launching executor's own child runtime when it was itself an in-process child. */
 	inheritedChildRuntime?: InheritedChildRuntime;
 	worktreeSetupHook?: string;
@@ -1292,7 +1295,7 @@ export async function runSingleStepInner(
 				task: taskForCompletionGuard,
 				// Construct lazily too: the shared gate refuses overlength tasks before
 				// registry/auth/model work. The child has already shut down normally.
-				arbiter: modelContext ? async (task) => createTaskMutationArbiter(modelContext)?.(task) ?? "unavailable" : undefined,
+				arbiter: currentChildExecution() ? task=>arbitrateTuiTask(path.dirname(ctx.outputFile),ctx.id,ctx.flatIndex,task) : modelContext ? async (task) => createTaskMutationArbiter(modelContext)?.(task) ?? "unavailable" : undefined,
 			});
 		}
 		const completionEvidence = planCompletionEvidence({
@@ -4809,6 +4812,9 @@ export async function runSubagent(
 	if (!timedOut && !stopped && !interrupted && config.timeoutMs !== undefined && timeoutMessage !== undefined && results.some((result) => result.timedOut === true && result.error?.startsWith(timeoutMessage))) {
 		timedOut = true;
 	}
+	// A direct TUI interruption belongs to its child while siblings finish.
+	// Preserve the native paused workflow state when collecting those results.
+	if(config.childExecution && !stopped && !timedOut && results.some(result=>result.interrupted===true))interrupted=true;
 	const signalTerminated = !stopped && !timedOut && !interrupted && results.some((result) => result.exitCode !== 0 && isUnexplainedProcessSignal(omitUndefinedProperties({
 		processSignal: result.processSignal,
 		interrupted: result.interrupted,
@@ -5037,7 +5043,9 @@ export async function runSubagent(
 		const expectedWriters: Record<string, number> = {};
 		for (const index of results.keys()) {
 			writers[String(index)] = [];
-			expectedWriters[String(index)] = 0;
+			// A retained interactive process is still alive. Never certify its exit
+			// as if it were an in-process child of this runner.
+			expectedWriters[String(index)] = config.childExecution ? 1 : 0;
 		}
 		const candidate: ProcessTerminalCandidate = {
 			version: 1,

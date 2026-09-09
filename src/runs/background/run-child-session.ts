@@ -393,6 +393,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 
 		const processEvent = (raw: ChildSessionEvent): void => {
 			if (settled) return;
+			if (raw.type === "pi_bots_user_interrupt") { interrupted = true; error = "Subagent interrupted from its Pi TUI."; }
 			const event = raw as ChildSessionEvent & ChildEvent;
 			appendChildEvent(projectChildSessionEventForJson(raw) as Record<string, unknown>);
 			input.transcriptWriter?.writeChildEvent(projectChildSessionEventForJson(raw) as ChildEvent);
