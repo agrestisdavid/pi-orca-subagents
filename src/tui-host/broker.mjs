@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import { atomicJson, readJson, jsonSocket, VERSION } from "./protocol.mjs";
 import { claimDispatchView } from "./dispatch-view.mjs";
+import {stopOnTabClose, tabPresence, requestTabStop} from './tab-close.mjs';
 
 const root = path.resolve(process.argv[2]);
 const manifestFile = path.join(root, "host.json");
@@ -15,6 +16,7 @@ const launch = readJson(path.join(root, "launch.json"));
 if (!launch) throw Error("Missing TUI launch descriptor");
 const mode = launch.execution;
 const mapping = readJson(path.join(mode.coordinationRoot, "mapping.json"));
+const settingsFile = mapping?.piBotsSettingsFile || path.resolve(path.dirname(mode.statusExtension), '../settings.json');
 if (!mapping?.exe) throw Error("Confirmed Orca workflow mapping is missing");
 const token = randomUUID() + randomUUID();
 let host = {
@@ -94,6 +96,7 @@ async function command(args) {
 }
 let publication;
 async function openView() {
+  if (host.tabClose?.stop) throw Error('This tab was closed with native stop enabled. Use the native resume path for further work.');
   if (publication) return publication;
   publication = (async () => {
     if ([...peers].some((p) => p.role === "view")) return host.view;
@@ -144,6 +147,12 @@ async function openView() {
         save();
         return host.view;
       }
+      const runtime = await command(['status']);
+      if (tabPresence(runtime.data?.result?.runtime, shown.data?.result, host.view, observedRuntime) !== 'missing')
+        throw Error('Original tab absence is unconfirmed across the Orca connection. No replacement view was created.');
+      recordClosedView();
+      if (host.tabClose.stop)
+        throw Error('The original tab was closed with native stop enabled. Use native resume after the stop completes.');
       host.previousViews = [...(host.previousViews || []), host.view];
       host.view = null;
       host.viewState = "closed";
@@ -290,6 +299,9 @@ const server = net.createServer((socket) => {
             return;
           }
           if (message.role === "view") {
+            if (host.tabClose?.stop) throw Error('This child is stopping after its tab was closed.');
+            host.tabClose = undefined;
+            host.detachedAt = undefined;
             if (
               !message.identity?.ORCA_TERMINAL_HANDLE ||
               !message.identity?.ORCA_PANE_KEY
@@ -314,6 +326,11 @@ const server = net.createServer((socket) => {
             host.viewState = "attached";
             host.identity = message.identity;
             save();
+            const connectedView = host.view;
+            void command(['status']).then(result => {
+              if (host.view === connectedView && result.data?.result?.runtime?.reachable)
+                observedRuntime = result.data.result.runtime.runtimeId;
+            });
           }
           peer.role = message.role;
           peer.paused = peer.role === "control";
@@ -470,12 +487,69 @@ const server = net.createServer((socket) => {
     clearTimeout(timer);
     peers.delete(peer);
     if (peer === agent) agent = undefined;
-    if (peer.role === "view" && host.viewState === "attached") {
+    if (peer.role === "view" && host.viewState === "attached" && ![...peers].some(p => p.role === 'view')) {
       host.viewState = "detached";
+      host.detachedAt = Date.now();
       save();
     }
   });
 });
+let closeCheckBusy = false, missingCount = 0;
+let observedRuntime = mapping.runtimeId;
+function recordClosedView() {
+  if (host.tabClose) return;
+  host.tabClose = {requestId:'tab-close-'+randomUUID(), confirmedAt:Date.now(),
+    stop:stopOnTabClose(settingsFile), scope:host.dispatchView && host.view.paneKey === mapping.worker.terminal.paneKey ? 'workflow' : 'child'};
+  host.viewState = 'closed';
+  host.detachedAt ||= Date.now();
+  save();
+  if (host.tabClose.scope === 'workflow')
+    atomicJson(path.join(host.coordinationRoot,'dispatch-tab-close.json'),{...host.tabClose,view:host.view});
+  log('tab-closed', host.tabClose);
+}
+async function checkTabClose() {
+  if (closeCheckBusy || !host.view || !host.detachedAt || [...peers].some(p => p.role === 'view')) return;
+  closeCheckBusy = true;
+  try {
+    if (!host.tabClose) {
+      if (Date.now() - host.detachedAt < 1500) return;
+      const runtime = await command(['status']);
+      if (!runtime.ok || runtime.data?.result?.runtime?.reachable !== true) { missingCount = 0; return; }
+      const listed = await command(['terminal','list','--worktree',`path:${launch.cwd}`]);
+      const presence = tabPresence(runtime.data.result.runtime, listed.ok ? listed.data.result : undefined, host.view, observedRuntime);
+      if (presence === 'present') { observedRuntime = runtime.data.result.runtime.runtimeId; missingCount = 0; return; }
+      if (presence !== 'missing' || ++missingCount < 2) return;
+      recordClosedView();
+    }
+    if (!host.tabClose.stop) return;
+    if (!host.tabClose.requests) {
+      host.tabClose.requests = requestTabStop(host);
+      save();
+    }
+    for (const request of host.tabClose.requests) {
+      const reply = readJson(request.file + '.reply.json');
+      if (reply?.success === false) throw Error('Original native tab-close stop failed: ' + JSON.stringify(reply.error));
+    }
+    host.tabCloseError = undefined;
+    // The native runner owns cancellation and status. Only retire the UI after
+    // it has released its child; killing Pi first would turn Stop into a crash.
+    if ((host.executionReleased || host.exitObservedAt) && !host.tabClose.retiringAt) {
+      host.tabClose.retiringAt = Date.now();
+      stopping = true;
+      save();
+      if (!host.exitObservedAt && agent) agent.send({kind:'request',id:'tab-close-retire-'+randomUUID(),op:'retire',args:{}});
+    }
+    if (host.exitObservedAt) {
+      host.tabClose.completedAt = Date.now();
+      save();
+      setTimeout(() => process.exit(0), 200);
+    }
+  } catch (error) {
+    host.tabCloseError = String(error.message || error);
+    save();
+  } finally { closeCheckBusy = false; }
+}
+setInterval(checkTabClose, 1000).unref();
 server.listen(0, "127.0.0.1", async () => {
   host.port = server.address().port;
   save();

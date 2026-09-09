@@ -1,6 +1,6 @@
 # Local Pi Bots child execution backend
 
-Maintained fork: **0.66.0-pi-bots.2**, based on the complete installed upstream
+Maintained fork: **0.66.0-pi-bots.3**, based on the complete installed upstream
 **pi-subagents 0.66.0**. Its initial Git commit is the unmodified upstream
 baseline. The installed npm copy is not patched. Windows, Node 24.14.0,
 Pi SDK 0.85.1, node-pty 1.1.0 and Orca 1.4.196 were used for validation.
@@ -111,13 +111,24 @@ The shared adapter restarts through its verified saved binding; no shell
 commands are typed into the Pi chat. A native resume can reuse the slot only
 after the prior writer's observed exit. Existing mappings retain their layout.
 
-**Closing the shared dispatch pane aborts its Orca dispatch.** The installed
-Orca marks it failed with `termination_reason: "operator_close"`, and later
-`worker_done` fails with `inactive_dispatch`. Native Pi may continue under its
-independent PTY, but this is not a recoverable Orca view detachment. Keep the
-shared pane open until the whole workflow settles. `separate` retains the
-previous detachable-child behavior. Shared mode is currently explicit opt-in;
-the default has not changed pending the user's choice about this close behavior.
+Shared layout is the default for new Orca TUI workflows. Existing mappings keep
+their layout. `piBots.stopOnTabClose` in the Pi settings defaults to `true`;
+`/pi-bots-settings` offers the preference interactively and accepts
+`stop-on-tab-close on|off`. Hosts read the setting at closure time.
+
+Closing an additional child pane delivers a native stop to that child. Closing
+the shared pane stops the whole native workflow, including when the parent is
+offline. The broker uses the existing native stop inbox or original model-free
+workflow controller, records the original request, waits for native release,
+then retires the actual Pi process and its PTY broker. It never labels a killed
+process as a successful native stop. Cancelled attempts require native resume.
+
+Orca records shared-pane closure as `termination_reason: "operator_close"`.
+With `stopOnTabClose: false`, Pi continues and can reconnect to another view,
+but that cannot revive the cancelled Orca dispatch. A replacement dispatch is
+never created to hide cancellation. Reachability and exact tab/pane inventory
+are checked before close-triggered stop; a failed query or changed runtime
+with missing restored panes leaves the outcome unconfirmed and does not stop Pi.
 
 Protocol adapters are detached from terminal processes. Their durable spool
 survives parent or terminal loss, and acknowledged dead adapters can restart
@@ -129,7 +140,7 @@ explicit recovery limitation, not evidence that no operation happened.
 
 Actual child completion, native question, confirmed answer and workflow
 success/failure are mirrored through official hooks and orchestration commands.
-Native Pi owns stopping. Closing a child view only disconnects its terminal.
+Native Pi owns stopping, including the default stop triggered by confirmed tab closure.
 Explicit test cleanup additionally retires only verified owned test processes.
 
 ## Validation and limits
