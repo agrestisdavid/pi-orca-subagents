@@ -1,6 +1,6 @@
 # Local Pi Bots child execution backend
 
-Maintained fork: **0.66.0-pi-bots.1**, based on the complete installed upstream
+Maintained fork: **0.66.0-pi-bots.2**, based on the complete installed upstream
 **pi-subagents 0.66.0**. Its initial Git commit is the unmodified upstream
 baseline. The installed npm copy is not patched. Windows, Node 24.14.0,
 Pi SDK 0.85.1, node-pty 1.1.0 and Orca 1.4.196 were used for validation.
@@ -101,6 +101,23 @@ additionally registers through the unmodified official Orca status extension.
 Inherited Orca/Herdr identities are stripped before child startup. Reattachment
 updates the actual child's official hook identity to its own current tab.
 The child/session/attempt/native run/PTY/Orca IDs are retained together.
+
+Pi Bots supports `dispatchView: "shared" | "separate"` for Orca TUI execution.
+`shared` uses a durable first-child claim to present the real Pi TUI in the
+workflow's existing dispatch pane. Further parallel/dynamic children get their
+own panes. One scout uses two total tabs (coordinator plus Pi/dispatch), and
+three children use four. The native process/session factory is unchanged.
+The shared adapter restarts through its verified saved binding; no shell
+commands are typed into the Pi chat. A native resume can reuse the slot only
+after the prior writer's observed exit. Existing mappings retain their layout.
+
+**Closing the shared dispatch pane aborts its Orca dispatch.** The installed
+Orca marks it failed with `termination_reason: "operator_close"`, and later
+`worker_done` fails with `inactive_dispatch`. Native Pi may continue under its
+independent PTY, but this is not a recoverable Orca view detachment. Keep the
+shared pane open until the whole workflow settles. `separate` retains the
+previous detachable-child behavior. Shared mode is currently explicit opt-in;
+the default has not changed pending the user's choice about this close behavior.
 
 Protocol adapters are detached from terminal processes. Their durable spool
 survives parent or terminal loss, and acknowledged dead adapters can restart

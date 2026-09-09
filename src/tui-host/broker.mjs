@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import { atomicJson, readJson, jsonSocket, VERSION } from "./protocol.mjs";
+import { claimDispatchView } from "./dispatch-view.mjs";
 
 const root = path.resolve(process.argv[2]);
 const manifestFile = path.join(root, "host.json");
@@ -96,6 +97,9 @@ async function openView() {
   if (publication) return publication;
   publication = (async () => {
     if ([...peers].some((p) => p.role === "view")) return host.view;
+    if (host.dispatchView && !host.view && !host.previousViews?.length)
+      host.view = { handle: mapping.worker.terminal.handle,
+        tabId: mapping.worker.terminal.tabId, paneKey: mapping.worker.terminal.paneKey };
     if (host.view?.handle) {
       const shown = await command([
         "terminal",
@@ -132,6 +136,11 @@ async function openView() {
           tabId: matches[0].tabId,
           paneKey: matches[0].paneKey,
         };
+        if (host.dispatchView && !host.dispatchViewRenamed) {
+          const renamed = await command(["terminal", "rename", "--terminal", host.view.handle,
+            "--title", `Pi ${host.agent} · Dispatch · ${host.runId.slice(0, 8)}`]);
+          host.dispatchViewRenamed = renamed.ok;
+        }
         save();
         return host.view;
       }
@@ -139,6 +148,8 @@ async function openView() {
       host.view = null;
       host.viewState = "closed";
       save();
+      if (host.dispatchView && !agentStarted)
+        throw Error("The shared dispatch pane closed before Pi attached; native startup is blocked.");
     }
     if (host.viewState === "creating")
       throw Error(
@@ -469,6 +480,8 @@ server.listen(0, "127.0.0.1", async () => {
   host.port = server.address().port;
   save();
   try {
+    host.dispatchView = await claimDispatchView(mode.coordinationRoot, manifestFile, launch);
+    save();
     await openView();
   } catch (error) {
     fail(error);
