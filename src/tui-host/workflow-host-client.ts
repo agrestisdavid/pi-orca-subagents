@@ -46,7 +46,7 @@ export function workflowControlRoot(
   if (path.isAbsolute(sessionId) && fs.existsSync(sessionId)) {
     try {
       const header = JSON.parse(
-        fs.readFileSync(sessionId, "utf8").split("\n")[0],
+        fs.readFileSync(sessionId, "utf8").split("\n")[0] || "",
       );
       const old = readJson(controlIndexFile(header.id, runId));
       if (
@@ -135,7 +135,7 @@ export async function startWorkflowHost(request: any, ctx: any) {
       new URL("../../workflow-host-entry.mjs", import.meta.url),
     );
     const log = fs.openSync(path.join(root, "host.log"), "a");
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       JITI_ALIAS: JSON.stringify(aliases.aliases),
       PI_BOTS_WORKFLOW_HOST: root,

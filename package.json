@@ -1,7 +1,7 @@
 {
-  "name": "pi-subagents",
-  "version": "0.66.0-pi-bots.3",
-  "description": "Pi extension for single-agent delegation and scripted multi-agent workflows",
+  "name": "pi-orca-subagents",
+  "version": "0.1.1",
+  "description": "Complete Pi subagents engine with background workflows and interactive Orca terminals (POS)",
   "author": "Nico Bailon",
   "license": "MIT",
   "type": "module",
@@ -24,11 +24,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nicobailon/pi-subagents.git"
+    "url": "git+https://github.com/agrestisdavid/pi-orca-subagents.git"
   },
-  "homepage": "https://github.com/nicobailon/pi-subagents#readme",
+  "homepage": "https://github.com/agrestisdavid/pi-orca-subagents#readme",
   "bugs": {
-    "url": "https://github.com/nicobailon/pi-subagents/issues"
+    "url": "https://github.com/agrestisdavid/pi-orca-subagents/issues"
   },
   "keywords": [
     "pi-package",
@@ -40,10 +40,12 @@
     "cli"
   ],
   "bin": {
-    "pi-subagents": "install.mjs"
+    "pi-orca-subagents": "install.mjs"
   },
   "files": [
     "index.ts",
+    "native.ts",
+    "extensions/*.ts",
     "src/**/*.ts",
     "src/**/*.mjs",
     "*.mjs",
@@ -54,13 +56,23 @@
     "README.md",
     "CHANGELOG.md",
     "PI-BOTS.md",
+    "LICENSE",
     "install-local.ps1",
-    "test/tui/*.mjs"
+    "!skills/pos/scripts/Test-*",
+    "!skills/pos/scripts/Cleanup-*",
+    "!skills/pos/scripts/Finish-*",
+    "!skills/pos/scripts/*test*",
+    "!skills/pos/scripts/*smoke*",
+    "!skills/pos/scripts/installed-backend-probe.ts"
   ],
   "scripts": {
-    "test": "npm run test:tui",
+    "test": "npm run test:tui && npm run test:pos && npm run test:wrapper",
     "test:tui": "node --test test/tui/*.test.mjs",
-    "test:wrapper": "node ../../skills/pi-bots/scripts/Test-PiBotsExtension.mjs"
+    "test:wrapper": "node skills/pos/scripts/Test-PiBotsExtension.mjs",
+    "test:pos": "node --test test/pos/*.test.mjs",
+    "test:unit": "node test/support/run-upstream.mjs unit",
+    "test:integration": "node test/support/run-upstream.mjs integration",
+    "typecheck": "tsc --noEmit"
   },
   "pi": {
     "extensions": [
@@ -95,17 +107,28 @@
   },
   "dependencies": {
     "@earendil-works/pi-server": "0.85.0",
-    "node-pty": "1.1.0",
+    "@juicesharp/rpiv-todo": "2.9.0",
     "acorn": "8.18.0",
     "jiti": "2.7.0",
+    "node-pty": "1.1.0",
     "typebox": "1.1.38",
     "undici": "8.10.0",
     "yaml": "2.8.3"
   },
-  "devDependencies": {},
-  "piBotsUpstream": {
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@oxlint/plugins": "1.80.0",
+    "@types/node": "24.13.3",
+    "oxlint": "1.80.0",
+    "typescript": "5.9.3"
+  },
+  "posUpstream": {
     "version": "0.66.0",
-    "source": "installed npm package",
+    "tag": "v0.66.0",
+    "localBaseline": "4ed349d",
     "host": "0.85.1"
   }
 }

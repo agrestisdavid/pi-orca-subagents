@@ -525,22 +525,26 @@ function formatRequiredOutputError(requiredOutput: {
 	kind: "file-only" | "structured";
 	path: string;
 	missing: boolean;
-} | undefined): string | undefined {
+} | undefined, structuredResultPresent = false): string | undefined {
 	if (!requiredOutput?.missing) return undefined;
-	return `Required ${requiredOutput.kind} output was not produced: ${requiredOutput.path.slice(0, 2_048)}`;
+	const missing = `Required ${requiredOutput.kind} output was not produced: ${requiredOutput.path.slice(0, 2_048)}`;
+	return requiredOutput.kind === "file-only" && structuredResultPresent
+		? `${missing}\nOutput contract not fulfilled; structured result exists.`
+		: missing;
 }
 
 function formatChildFailureDiagnostic(input: {
 	error: string | undefined;
 	afterCompactionSettlement?: boolean;
 	abortRecoveryDiagnostic?: string;
+	structuredResultPresent?: boolean;
 	requiredOutput?: {
 		kind: "file-only" | "structured";
 		path: string;
 		missing: boolean;
 	};
 }): string | undefined {
-	const missingOutput = formatRequiredOutputError(input.requiredOutput);
+	const missingOutput = formatRequiredOutputError(input.requiredOutput, input.structuredResultPresent);
 	const notes = [
 		input.abortRecoveryDiagnostic,
 		input.afterCompactionSettlement ? "Child failure followed session compaction and agent settlement." : undefined,
@@ -1316,7 +1320,7 @@ export async function runSingleStepInner(
 				? { kind: "structured" as const, path: effectiveStructuredOutput.outputPath, missing: !fs.existsSync(effectiveStructuredOutput.outputPath) }
 			: undefined;
 		finalRequiredOutputMissing = requiredOutput?.missing;
-		const missingRequiredOutputError = formatRequiredOutputError(requiredOutput);
+		const missingRequiredOutputError = formatRequiredOutputError(requiredOutput, validatedStructuredOutput);
 		const missingRequiredOutputAfterMutation = Boolean(missingRequiredOutputError) && (mutationAttemptObserved || Boolean(mutationEvidence.changedFiles.length));
 		const effectiveExitCode = toolAvailabilityError || completionEvidence.legacyFailureError || midToolExitError || structuredError || emptyOutputError || missingRequiredOutputError
 			? 1
@@ -1549,6 +1553,7 @@ export async function runSingleStepInner(
 					: finalResult?.error ?? (intercomDetachReceipt ? INTERCOM_DETACH_RECEIPT : undefined);
 	const effectiveFinalError = formatChildFailureDiagnostic({
 		error: baseFinalError,
+		structuredResultPresent: finalResult?.structuredOutput !== undefined,
 		afterCompactionSettlement: effectiveFinalExitCode !== 0 ? finalResult?.afterCompactionSettlement : undefined,
 		abortRecoveryDiagnostic: effectiveFinalExitCode !== 0 ? finalResult?.abortRecoveryDiagnostic : undefined,
 		requiredOutput: effectiveFinalExitCode !== 0 ? finalResult?.effects?.settlementDiagnostic?.requiredOutput : undefined,

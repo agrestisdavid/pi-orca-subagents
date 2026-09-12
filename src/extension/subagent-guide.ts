@@ -28,7 +28,7 @@ export function readSubagentGuide(topic = "overview", root = packageRoot): strin
 		return `Unknown subagents guide topic '${topic}'. Valid topics: ${SUBAGENT_GUIDE_TOPICS.join(", ")}. No files were changed.`;
 	}
 	const filePath = topic === "overview"
-		? path.join(root, "README.md")
+		? path.join(root, "docs", "UPSTREAM-README.md")
 		: path.join(root, "docs", `${topic}.md`);
 	try {
 		return fs.readFileSync(filePath, "utf-8");

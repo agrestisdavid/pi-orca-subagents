@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {atomicJson,command} from './orca-adapter.mjs';
+const scripts=path.dirname(fileURLToPath(import.meta.url)),agentRoot=path.resolve(scripts,'../../..');
+const cwd=path.resolve(process.env.POS_TEST_CWD || "tests/pi-bots-orca"),dir=fs.mkdtempSync(path.join(cwd,'dynamic-')),runId=path.basename(dir);
+const stage=path.join(agentRoot, 'extensions',`.pi-bots-dynamic-${process.pid}.ts`);
+process.env.PI_SUBAGENTS_TEMP_ROOT=path.join(dir,'state');
+const sessionFile=path.join(dir,'child.jsonl');
+fs.writeFileSync(sessionFile,[{type:'session',id:'fixture'},{type:'message',id:'task',message:{role:'user',content:[{type:'text',text:'Read-only dynamic child fixture'}]}}].map(x=>JSON.stringify(x)).join('\n')+'\n');
+const status={runId,cwd,state:'running',steps:[{agent:'scout',status:'running',sessionFile},{agent:'reviewer',status:'running',sessionFile}]};
+atomicJson(path.join(dir,'status.json'),status);
+const listeners=new Map(),handlers={};let tool;
+try {
+ fs.writeFileSync(stage,fs.readFileSync(path.join(agentRoot,'extensions/pi-bots.ts'),'utf8').replace('../skills/pos/scripts/orca-bridge.mjs',pathToFileURL(path.join(scripts,'orca-bridge.mjs')).href));
+ const {default:register}=await import(pathToFileURL(stage));
+ register({registerTool(t){tool=t;},on(name,fn){handlers[name]=fn;},sendMessage(){},events:{on(name,fn){listeners.set(name,fn);return()=>listeners.delete(name);},emit(name,req){if(name==='subagents:rpc:v1:request')queueMicrotask(()=>listeners.get('subagents:rpc:v1:reply:'+req.requestId)?.({version:1,requestId:req.requestId,success:true,data:{text:'native fixture',details:{runId,asyncDir:dir}}}));}}});
+ const ctx={cwd,hasUI:false,sessionManager:{getSessionId:()=>dir,getSessionFile:()=>path.join(dir,'parent.jsonl')}};
+ const invoke=params=>tool.execute('test',params,undefined,undefined,ctx);
+ const start=await invoke({action:'start',launch:{agent:'scout',task:'simulated two-child workflow'},viewMode:'orca'});
+ assert.equal(start.isError,undefined);assert.deepEqual(start.details.views.published,[0,1]);
+ status.steps.push({agent:'worker',status:'running',sessionFile});atomicJson(path.join(dir,'status.json'),status);
+ const dynamic=await invoke({action:'status',runId});assert.deepEqual(dynamic.details.views.published,[0,1,2]);
+ const sync=await invoke({action:'sync_views',runId,viewMode:'orca'});assert.equal(sync.isError,undefined);
+ const exe=path.join(process.env.LOCALAPPDATA,'Programs/orca/resources/bin/orca.exe');
+ const terminals=await command(exe,['terminal','list','--worktree',`path:${cwd}`,'--json']);
+ assert.equal(terminals.data.result.terminals.length,3);
+ assert.equal(new Set(terminals.data.result.terminals.map(t=>t.handle)).size,3);
+ atomicJson(path.join(dir,'test-result.json'),{start:start.details,dynamic:dynamic.details,sync:sync.details,terminals:terminals.data});
+ status.state='complete';for(const child of status.steps)child.status='completed';atomicJson(path.join(dir,'status.json'),status);
+ const cleaned=await invoke({action:'cleanup_views',runId,confirm:true});assert.equal(cleaned.isError,undefined);assert.equal(cleaned.details.cleanup.closed,true);
+ console.log('PASS: two parallel child views plus one dynamic child; repeated sync creates exactly three distinct Orca chats; native cleanup closes only their handles');
+}finally {handlers.session_shutdown?.();fs.unlinkSync(stage);}

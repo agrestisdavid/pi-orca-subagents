@@ -1,3 +1,7 @@
+# Historical TUI implementation notes
+
+These notes describe the inherited local backend. Current installation and dependency resolution are documented in [README.md](README.md).
+
 # Local Pi Bots child execution backend
 
 Maintained fork: **0.66.0-pi-bots.3**, based on the complete installed upstream
@@ -5,17 +9,15 @@ Maintained fork: **0.66.0-pi-bots.3**, based on the complete installed upstream
 baseline. The installed npm copy is not patched. Windows, Node 24.14.0,
 Pi SDK 0.85.1, node-pty 1.1.0 and Orca 1.4.196 were used for validation.
 
-## Install and restore
+## Installation history
 
-From this directory run `./install-local.ps1`. It performs a locked `npm ci`,
-runs the authority tests, backs up `agent/settings.json`, and replaces only
-the pi-subagents package selection with this local source. Reload Pi afterwards.
-`./install-local.ps1 -RestoreUpstream` restores `npm:pi-subagents@0.66.0`.
-`-SkipDependencies` is available after dependency installation/tests have already
-passed. Existing agent overrides and `orcaProgressTabs` settings are preserved.
-The upstream published package refers to development tests absent from its
-distribution; this fork supplies a separate `test:tui` suite and does not claim
-to have run the unpublished upstream suite.
+The former backend installer and its `-RestoreUpstream` / `-SkipDependencies`
+options have been replaced by the standalone POS package. Use the current
+[installation and update instructions](README.md#install). The local migration
+script selects a development checkout after dependencies and tests have been
+prepared; its reported backup provides the rollback path. Upstream test sources
+are now retained under `test/` and run through a separate fixture host, while
+POS's package and TUI acceptance checks use the real Pi SDK.
 
 ## Supported integration boundary
 
@@ -147,7 +149,7 @@ Explicit test cleanup additionally retires only verified owned test processes.
 
 Authority tests: `npm test`. Wrapper checks: `npm run test:wrapper`.
 Live tests are in `../../skills/pi-bots/scripts/Test-Tui*.mjs` and
-`Test-AdapterRestart.mjs`; run them from `C:\Users\david\.pi` against the
+`Test-AdapterRestart.mjs`; run them from `<previous Pi workspace>` against the
 isolated Orca-managed `tests/pi-bots-orca` fixture. Live scout tests use the
 configured model and incur its normal usage. History/adapter fixtures clearly
 mark synthetic data and require no model calls.

@@ -6,9 +6,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
-import { atomicJson, readJson, jsonSocket, VERSION } from "./protocol.mjs";
+import { atomicJson, readJson, jsonSocket, delay, VERSION } from "./protocol.mjs";
 import { claimDispatchView } from "./dispatch-view.mjs";
-import {stopOnTabClose, tabPresence, requestTabStop} from './tab-close.mjs';
+import { agentDirectory } from '../pos/resources.mjs';
+import {stopOnTabClose, tabPresence, requestTabStop, workspaceForView, createAbsenceTracker, isDispatchView} from './tab-close.mjs';
 
 const root = path.resolve(process.argv[2]);
 const manifestFile = path.join(root, "host.json");
@@ -16,7 +17,7 @@ const launch = readJson(path.join(root, "launch.json"));
 if (!launch) throw Error("Missing TUI launch descriptor");
 const mode = launch.execution;
 const mapping = readJson(path.join(mode.coordinationRoot, "mapping.json"));
-const settingsFile = mapping?.piBotsSettingsFile || path.resolve(path.dirname(mode.statusExtension), '../settings.json');
+const settingsFile = mapping?.piBotsSettingsFile || path.join(mode.agentDir || agentDirectory(), 'settings.json');
 if (!mapping?.exe) throw Error("Confirmed Orca workflow mapping is missing");
 const token = randomUUID() + randomUUID();
 let host = {
@@ -38,16 +39,45 @@ let agent,
   agentStarted = false,
   stopping = false;
 let sequence = 0;
+const absence = createAbsenceTracker(mapping.runtimeId);
+const viewWorkspace = () => workspaceForView(host, mapping, launch.cwd);
 const peers = new Set();
 const operations = new Map();
-const save = () => atomicJson(manifestFile, { ...host, updatedAt: Date.now() });
+let persistenceFailure = undefined;
+// A recovered filesystem does not revive this broker. Native resume owns
+// starting another execution; cleanup may still change the displayed state.
+let failure;
+const requireOperationalHost = () => {
+  if (failure) throw failure;
+};
+const save = () => {
+  try {
+    atomicJson(manifestFile, { ...host, updatedAt: Date.now() });
+    persistenceFailure = undefined;
+    return true;
+  } catch (error) {
+    // A store failure is a terminal host failure, not a warning: no
+    // ready/state/prompt/openView success signal may follow it. The original
+    // error stays visible through the failure path below, which never calls
+    // save() again (no recursive storage) and cannot be hidden by a log
+    // failure. Release and cleanup keep working against the in-memory host.
+    if (!persistenceFailure) persistenceFailure = error;
+    if (host.state !== "failed") fail(error);
+    return false;
+  }
+};
 const broadcast = (message) => {
   const event = { ...message, sequence: ++sequence };
-  fs.appendFileSync(
-    path.join(root, "control-events.jsonl"),
-    JSON.stringify(event) + "\n",
-  );
+  // Live transport first: a broken or locked control-events file must not
+  // keep the control peer from seeing the event (e.g. the original failure
+  // error). The append is replay support only and stays best-effort.
   for (const p of peers) if (p.role === "control" && !p.paused) p.send(event);
+  try {
+    fs.appendFileSync(
+      path.join(root, "control-events.jsonl"),
+      JSON.stringify(event) + "\n",
+    );
+  } catch {}
 };
 const log = (kind, value) =>
   fs.appendFileSync(
@@ -55,11 +85,31 @@ const log = (kind, value) =>
     JSON.stringify({ at: Date.now(), kind, ...value }) + "\n",
   );
 const fail = (error) => {
+  if (failure) return;
+  failure = error instanceof Error ? error : new Error(String(error));
   host.state = "failed";
-  host.error = String(error?.stack || error);
-  save();
-  broadcast({ kind: "failed", error: host.error });
-  log("failed", { error: host.error });
+  host.error = String(failure.stack || failure);
+  // The original error must reach the control peer even when the host
+  // store or the event log is broken: the transport comes first, and the
+  // log/persist below are best-effort and never recurse into save().
+  try {
+    broadcast({ kind: "failed", error: host.error });
+  } catch {}
+  try {
+    log("failed", { error: host.error });
+  } catch {
+    try {
+      process.stderr.write(
+        "TUI host failed (event log unavailable): " + host.error + "\n",
+      );
+    } catch {}
+  }
+  try {
+    atomicJson(manifestFile, { ...host, updatedAt: Date.now() });
+  } catch {
+    // The on-disk state may lag behind the broadcast failure; the original
+    // error is already visible above. No retry loop here.
+  }
 };
 
 async function command(args) {
@@ -96,6 +146,7 @@ async function command(args) {
 }
 let publication;
 async function openView() {
+  requireOperationalHost();
   if (host.tabClose?.stop) throw Error('This tab was closed with native stop enabled. Use the native resume path for further work.');
   if (publication) return publication;
   publication = (async () => {
@@ -104,59 +155,27 @@ async function openView() {
       host.view = { handle: mapping.worker.terminal.handle,
         tabId: mapping.worker.terminal.tabId, paneKey: mapping.worker.terminal.paneKey };
     if (host.view?.handle) {
-      const shown = await command([
-        "terminal",
-        "list",
-        "--worktree",
-        `path:${launch.cwd}`,
-      ]);
-      if (!shown.ok)
-        throw Error(
-          "Cannot reconcile the previous Orca tab: " + JSON.stringify(shown),
-        );
-      const matches = shown.data.result.terminals
-        .map((t) => ({
-          ...t,
-          paneKey:
-            t.paneKey ||
-            (t.tabId && t.leafId ? `${t.tabId}:${t.leafId}` : undefined),
-        }))
-        .filter(
-          (t) =>
-            t.handle === host.view.handle ||
-            (host.view.paneKey &&
-              host.view.tabId &&
-              t.paneKey === host.view.paneKey &&
-              t.tabId === host.view.tabId),
-        );
-      if (matches.length > 1)
-        throw Error(
-          "Orca returned ambiguous identities for the original child tab.",
-        );
-      if (matches.length === 1) {
-        host.view = {
-          handle: matches[0].handle,
-          tabId: matches[0].tabId,
-          paneKey: matches[0].paneKey,
-        };
-        if (host.dispatchView && !host.dispatchViewRenamed) {
-          const renamed = await command(["terminal", "rename", "--terminal", host.view.handle,
-            "--title", `Pi ${host.agent} · Dispatch · ${host.runId.slice(0, 8)}`]);
-          host.dispatchViewRenamed = renamed.ok;
-        }
-        save();
-        return host.view;
+      // Startup confirms exactly like the live monitor: two consecutive
+      // confirmed absences in the tab's own workspace on the same reachable
+      // Orca runtime. One unreadable answer is not a close.
+      const started = Date.now();
+      for (;;) {
+        const presence = await probeViewPresence();
+        if (presence === "found") return host.view;
+        if (presence === "absent") break;
+        if (Date.now() - started > 60000)
+          throw Error(
+            "Cannot reconcile the previous Orca tab: the Orca connection or inventory stayed unconfirmed for 60 seconds. No tab close was inferred.",
+          );
+        await delay(1000);
       }
-      const runtime = await command(['status']);
-      if (tabPresence(runtime.data?.result?.runtime, shown.data?.result, host.view, observedRuntime) !== 'missing')
-        throw Error('Original tab absence is unconfirmed across the Orca connection. No replacement view was created.');
       recordClosedView();
       if (host.tabClose.stop)
         throw Error('The original tab was closed with native stop enabled. Use native resume after the stop completes.');
       host.previousViews = [...(host.previousViews || []), host.view];
       host.view = null;
       host.viewState = "closed";
-      save();
+      if (!save()) throw persistenceFailure;
       if (host.dispatchView && !agentStarted)
         throw Error("The shared dispatch pane closed before Pi attached; native startup is blocked.");
     }
@@ -166,7 +185,7 @@ async function openView() {
       );
     host.viewState = "creating";
     host.viewRequestId = randomUUID();
-    save();
+    if (!save()) throw persistenceFailure;
     const entry = fileURLToPath(new URL("./attach.mjs", import.meta.url));
     const quote = (s) => "'" + s.replaceAll("'", "''") + "'";
     const cmd = `& ${quote(process.execPath)} ${quote(entry)} ${quote(manifestFile)}`;
@@ -193,7 +212,7 @@ async function openView() {
         paneKey: view.paneKey,
       };
       host.viewState = "created";
-      save();
+      if (!save()) throw persistenceFailure;
     } else if (!host.view)
       throw Error(
         "Orca tab creation is unconfirmed; no replacement was started. " +
@@ -204,10 +223,11 @@ async function openView() {
   return publication;
 }
 function startAgent(identity, cols, rows) {
+  requireOperationalHost();
   if (agentStarted) return;
   agentStarted = true;
   host.state = "initializing";
-  save();
+  if (!save()) return;
   const env = { ...process.env, ...launch.processEnv };
   for (const key of Object.keys(env))
     if (key.startsWith("ORCA_") || key.startsWith("HERDR_")) delete env[key];
@@ -329,7 +349,7 @@ const server = net.createServer((socket) => {
             const connectedView = host.view;
             void command(['status']).then(result => {
               if (host.view === connectedView && result.data?.result?.runtime?.reachable)
-                observedRuntime = result.data.result.runtime.runtimeId;
+                absence.markObserved(result.data.result.runtime.runtimeId);
             });
           }
           peer.role = message.role;
@@ -370,13 +390,23 @@ const server = net.createServer((socket) => {
           return;
         }
         if (peer.role === "agent") {
+          if (
+            (message.kind === "ready" || message.kind === "state") &&
+            failure
+          ) {
+            // A terminal error stays terminal: a late ready/state message must
+            // not mark the host operational again. Release and cleanup
+            // operations keep working.
+            log("late-agent-message-ignored", { ignored: message.kind });
+            return;
+          }
           if (message.kind === "ready") {
             Object.assign(host, message.session, { state: "ready" });
-            save();
+            if (!save()) return;
             broadcast(message);
           } else if (message.kind === "state") {
             Object.assign(host, message.state);
-            save();
+            if (!save()) return;
             broadcast(message);
           } else if (message.kind === "reply") {
             if (
@@ -463,6 +493,14 @@ const server = net.createServer((socket) => {
           setTimeout(() => process.exit(0), 200);
           return;
         }
+        // Inspection and native cleanup remain available, but no new work
+        // may reach the old agent after a terminal failure, even if a later
+        // manifest write could succeed.
+        if (failure && !["snapshot", "abort", "release", "retire"].includes(message.op))
+          return replyOperation(message.id, {
+            ok: false,
+            error: `TUI host is terminally failed: ${failure.message}`,
+          });
         if (!agent)
           return replyOperation(message.id, {
             ok: false,
@@ -471,7 +509,12 @@ const server = net.createServer((socket) => {
         if (message.op === "retire") stopping = true;
         if (message.op === "prompt") {
           host.state = "running";
-          save();
+          if (!save())
+            return replyOperation(message.id, {
+              ok: false,
+              error:
+                "Prompt not accepted: TUI host persistence failed; the host is terminally failed (see the failed event with the original error).",
+            });
         }
         agent.send(message);
       } catch (error) {
@@ -494,12 +537,67 @@ const server = net.createServer((socket) => {
     }
   });
 });
-let closeCheckBusy = false, missingCount = 0;
-let observedRuntime = mapping.runtimeId;
+let closeCheckBusy = false;
+async function probeViewPresence() {
+  // Shared by startup and live monitoring. Returns 'found' (host.view
+  // updated), 'absent' (two consecutive confirmed absences), or 'unconfirmed'
+  // (present-but-not-matched is handled above; connection errors, runtime
+  // switches and unreadable inventories must never prove a close).
+  const runtime = await command(['status']);
+  if (!runtime.ok || runtime.data?.result?.runtime?.reachable !== true) {
+    absence.probe('unknown');
+    return 'unconfirmed';
+  }
+  const listed = await command(['terminal','list','--worktree',`path:${viewWorkspace()}`]);
+  if (!listed.ok || !Array.isArray(listed.data?.result?.terminals)) {
+    absence.probe('unknown');
+    return 'unconfirmed';
+  }
+  const terminals = listed.data.result.terminals.map((t) => ({
+    ...t,
+    paneKey:
+      t.paneKey ||
+      (t.tabId && t.leafId ? `${t.tabId}:${t.leafId}` : undefined),
+  }));
+  const matches = terminals.filter(
+    (t) =>
+      t.handle === host.view.handle ||
+      (host.view.paneKey &&
+        host.view.tabId &&
+        t.paneKey === host.view.paneKey &&
+        t.tabId === host.view.tabId),
+  );
+  if (matches.length > 1)
+    throw Error(
+      "Orca returned ambiguous identities for the original child tab.",
+    );
+  if (matches.length === 1) {
+    host.view = {
+      handle: matches[0].handle,
+      tabId: matches[0].tabId,
+      paneKey: matches[0].paneKey,
+    };
+    if (host.dispatchView && !host.dispatchViewRenamed) {
+      const renamed = await command(["terminal", "rename", "--terminal", host.view.handle,
+        "--title", `Pi ${host.agent} · Dispatch · ${host.runId.slice(0, 8)}`]);
+      host.dispatchViewRenamed = renamed.ok;
+    }
+    absence.probe('present', runtime.data.result.runtime.runtimeId);
+    if (!save()) throw persistenceFailure;
+    return 'found';
+  }
+  const presence = tabPresence(
+    runtime.data.result.runtime,
+    listed.data.result,
+    host.view,
+    absence.runtime(),
+  );
+  return absence.probe(presence) === 'absent' ? 'absent' : 'unconfirmed';
+}
 function recordClosedView() {
   if (host.tabClose) return;
   host.tabClose = {requestId:'tab-close-'+randomUUID(), confirmedAt:Date.now(),
-    stop:stopOnTabClose(settingsFile), scope:host.dispatchView && host.view.paneKey === mapping.worker.terminal.paneKey ? 'workflow' : 'child'};
+    stop:stopOnTabClose(settingsFile), scope:isDispatchView(host, mapping) ? 'workflow' : 'child'};
   host.viewState = 'closed';
   host.detachedAt ||= Date.now();
   save();
@@ -513,12 +611,7 @@ async function checkTabClose() {
   try {
     if (!host.tabClose) {
       if (Date.now() - host.detachedAt < 1500) return;
-      const runtime = await command(['status']);
-      if (!runtime.ok || runtime.data?.result?.runtime?.reachable !== true) { missingCount = 0; return; }
-      const listed = await command(['terminal','list','--worktree',`path:${launch.cwd}`]);
-      const presence = tabPresence(runtime.data.result.runtime, listed.ok ? listed.data.result : undefined, host.view, observedRuntime);
-      if (presence === 'present') { observedRuntime = runtime.data.result.runtime.runtimeId; missingCount = 0; return; }
-      if (presence !== 'missing' || ++missingCount < 2) return;
+      if ((await probeViewPresence()) !== 'absent') return;
       recordClosedView();
     }
     if (!host.tabClose.stop) return;
@@ -552,10 +645,10 @@ async function checkTabClose() {
 setInterval(checkTabClose, 1000).unref();
 server.listen(0, "127.0.0.1", async () => {
   host.port = server.address().port;
-  save();
+  if (!save()) return;
   try {
     host.dispatchView = await claimDispatchView(mode.coordinationRoot, manifestFile, launch);
-    save();
+    if (!save()) throw persistenceFailure;
     await openView();
   } catch (error) {
     fail(error);

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## POS 0.1.1 - 2026-09-12
+
+- Publish the standalone POS package on `pos-main`, including `/pos`, the native delegation engine, Orca integration, and the bundled Todo extension.
+- Make children create their own Todo plan before accessing task tools, while preserving their original tool permissions.
+- Shorten `/pos` setup guidance by reusing known model and workspace settings and avoiding repeated discovery.
+- Keep storage failures visible, retry transient atomic-write conflicts, and verify tab closure in the correct workspace before stopping children.
+- Validate workflow templates, distinguish structured results from required output files, and preserve actionable failure evidence.
+- Document Git installation and updates with `git:github.com/agrestisdavid/pi-orca-subagents@pos-main` and `pi update --extensions`.
+- Restore the upstream test suite alongside POS tests and run checks on Windows and Linux.
+
+The entries below document the inherited pi-subagents history.
+
 ## [0.66.0] - 2026-09-06
 
 ### Highlights

@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ChatModel,LineIndex,recordText,safeText } from './chat-viewer.mjs';
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'pi-bots-chat-test-'));
+const session=path.join(root,'child.jsonl'),parent=path.join(root,'parent.jsonl');
+const msg=(id,role,text)=>({type:'message',id,message:{role,content:[{type:'text',text}]}});
+const append=(file,record)=>fs.appendFileSync(file,JSON.stringify(record)+'\n');
+try {
+ append(parent,{type:'session',id:'parent'});append(parent,msg('inherited','user','Prior question'));
+ append(session,{type:'session',id:'child',parentSession:parent});append(session,msg('inherited','user','Prior question'));
+ append(session,msg('task','user','EXACT ORIGINAL TASK'));
+ for(let i=0;i<1500;i++)append(session,msg('message-'+i,'assistant','full content '+i+'\n'+ 'x'.repeat(240)));
+ append(session,{type:'message',id:'call',message:{role:'assistant',content:[{type:'toolCall',id:'tool-1',name:'contact_supervisor',arguments:{question:'Choose A or B'}}]}});
+ append(session,msg('result','toolResult','Supervisor answered A'));
+ append(session,msg('huge','toolResult','FIRST-TOOL-BYTE\n'+'y'.repeat(600000)+'\nLAST-TOOL-BYTE'));
+ fs.writeFileSync(path.join(root,'status.json'),JSON.stringify({runId:'run',state:'running',steps:[{agent:'scout',sessionFile:session}]}));
+ const model=new ChatModel('run',root,0);model.refresh();
+ assert.equal(model.rows(true).length,1505);assert.equal(model.rows().length,1504);
+ assert(model.source.size>900000);
+ assert(model.lines(model.rows()[0],80).join('\n').includes('EXACT ORIGINAL TASK'));
+ const huge=model.lines(model.rows().at(-1),80).join('\n');assert(huge.includes('FIRST-TOOL-BYTE'));assert(huge.includes('LAST-TOOL-BYTE'));
+ const anchor=model.rows()[150].entry.offset;append(session,msg('live','assistant','NEW PERSISTED ANSWER'));model.refresh();
+ assert.equal(model.rows()[150].entry.offset,anchor);assert(model.lines(model.rows().at(-1),80).join('\n').includes('NEW PERSISTED ANSWER'));
+ fs.appendFileSync(session,'{"type":"message"');model.refresh();assert(model.notice.includes('unfinished'));
+ assert.equal(model.rows().length,1505);
+ assert.equal(safeText('\x1b]0;injection\x07safe\x1b[31m\x00'),'safe');
+ assert(recordText({recordType:'truncated',message:'cut'},'transcript').includes('SOURCE NOTICE'));
+ const fallback=path.join(root,'transcript.jsonl');append(fallback,msg('fallback','user','PROMPT_REDACTED'));
+ fs.writeFileSync(path.join(root,'status.json'),JSON.stringify({runId:'run',steps:[{sessionFile:path.join(root,'missing'),transcriptPath:fallback}]}));model.refresh();
+ assert(model.notice.includes('FALLBACK'));assert(model.lines(model.rows()[0],80).join('').includes('PROMPT_REDACTED'));
+ assert.throws(()=>new ChatModel('different-run',root,0).refresh(),/RunId/);
+ console.log('PASS: paged long chats, original task, tools, supervisor, inherited context, appended records, incomplete data, fallback and terminal sanitization');
+}finally {fs.rmSync(root,{recursive:true,force:true});}

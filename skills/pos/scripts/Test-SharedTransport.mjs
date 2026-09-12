@@ -1,0 +1,23 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {cwd,readJson,atomicJson,until,orca,delay} from './tui-test-utils.mjs';
+const reportFile=path.resolve(process.argv[2]||'');
+assert(reportFile.startsWith(cwd+path.sep) && path.basename(reportFile)==='result.json');
+const report=readJson(reportFile),run=report.runs?.[0];assert(run && !report.error);
+const mapping=readJson(path.join(run.coordinationRoot,'mapping.json'));
+const file=path.join(mapping.worker.dir,'tui-attachment.json');
+const old=readJson(file),host=readJson(old.manifest);
+assert.equal(path.resolve(readJson(path.join(host.root,'launch.json')).cwd),cwd);
+assert.equal(old.handle,host.view.handle);assert.equal(report.manifest,old.manifest);
+// Exact owned attachment receipt; the Pi process and dispatch shell stay alive.
+process.kill(old.pid);
+const next=await until(()=>{const a=readJson(file);return a?.pid!==old.pid?a:undefined;},'replacement terminal transport',15000);
+await delay(5000);
+const current=readJson(next.manifest);
+assert.equal(current.viewState,'attached');assert.equal(current.sessionId,host.sessionId);
+assert.equal(current.agentPid,host.agentPid);assert(!current.tabClose);
+const dispatch=await orca(['orchestration','dispatch-show','--task',mapping.taskId,'--from',mapping.coordinator.terminal.handle]);
+assert.equal(dispatch.dispatch.id,mapping.dispatchId);assert.equal(dispatch.dispatch.status,'completed');
+const result={checks:['A dead view transport reconnects in the same dispatch tab without native stop or another Pi session'],sessionId:host.sessionId,agentPid:host.agentPid,oldTransportPid:old.pid,newTransportPid:next.pid};
+atomicJson(path.join(path.dirname(reportFile),'transport.json'),result);console.log('PASS:',result.checks[0]);

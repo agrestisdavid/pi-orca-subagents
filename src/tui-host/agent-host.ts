@@ -8,6 +8,7 @@ import { createDefaultChildSessionFactory } from "../runs/shared/child-session.t
 import { createChildHooks } from "../runs/shared/child-hooks.ts";
 import { setRunnerChildExecution } from "../api/child-execution.ts";
 import { connect, readJson, atomicJson } from "./protocol.mjs";
+import { registerTuiTodoPlan } from "./todo-plan.ts";
 
 const manifestFile = process.env.PI_BOTS_TUI_HOST!;
 const descriptor = readJson(
@@ -25,7 +26,6 @@ let session: any,
 let interrupted = false,
   closed = false,
   context: any;
-let ownTodoPlan = false;
 const uiRequests = new Map<string, string>();
 const callbackSnapshot = new Map<string, any>();
 const callback = (name: string, ...args: any[]) => {
@@ -96,29 +96,7 @@ function requestResume(message: string) {
 const integration = {
   name: "pi-bots:tui-controls",
   factory(api: any) {
-    api.on("tool_call", (event: any) => {
-      if (!ownTodoPlan && event.toolName !== "todo")
-        return {
-          block: true,
-          reason:
-            "Create a short plan for this child with todo before starting the assigned work.",
-        };
-      if (
-        !ownTodoPlan &&
-        event.toolName === "todo" &&
-        event.input?.action === "update"
-      )
-        return {
-          block: true,
-          reason:
-            "Create this child's own todo item first; inherited tasks are not its plan.",
-        };
-    });
-    api.on("tool_result", (event: any) => {
-      if (event.toolName !== "todo" || event.isError) return;
-      if (event.input?.action === "create") ownTodoPlan = true;
-      if (event.input?.action === "clear") ownTodoPlan = false;
-    });
+    registerTuiTodoPlan(api);
     api.on("session_start", (_event: any, ctx: any) => {
       context = ctx;
       ctx.ui.setStatus(
@@ -134,11 +112,6 @@ const integration = {
       requestResume(event.text);
       return { action: "handled" };
     });
-    api.on("before_agent_start", (event: any) => ({
-      systemPrompt:
-        event.systemPrompt +
-        "\n\nPi Bots visibility contract: Before doing the assigned work, use todo to create a short plan belonging to this child. If a parent todo list was inherited, clear it first. Update the current item to in_progress before working and completed only after finishing it. Keep unfinished items truthful on interruption. The user can read and steer this exact session in its Pi TUI. Do not start another agent or change session identity to fulfil this task.",
-    }));
     api.registerCommand("bot-resume", {
       description: "Continue this child through its native parent workflow",
       handler: async (args: string) => requestResume(args),

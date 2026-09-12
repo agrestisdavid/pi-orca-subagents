@@ -1,0 +1,23 @@
+name: POS checks
+on:
+  push:
+    branches: [pos-main]
+  pull_request:
+    branches: [pos-main]
+jobs:
+  package:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:unit
+      - run: npm run test:integration

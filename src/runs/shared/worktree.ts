@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { worktrunkCommand, WORKTRUNK_WINDOWS_HINT } from './worktrunk-command.ts';
 import { runSetupCommand, type SetupCommandOptions, type SetupCommandResult } from "./worktree-setup-command.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -533,7 +534,9 @@ interface WorktrunkCapability {
 
 function runWorktrunk(args: string[], cwd?: string): WorktreeCommandResult {
 	try {
-		const result = spawnSync("wt", args, {
+		const command = worktrunkCommand();
+		if (!command) return { stdout: "", stderr: WORKTRUNK_WINDOWS_HINT, status: 1 };
+		const result = spawnSync(command, args, {
 			cwd,
 			encoding: "utf-8",
 			windowsHide: true,
@@ -587,12 +590,17 @@ async function resolveSetupProvider(tx: SetupTransaction, requested: WorktreePro
 		return "native";
 	}
 	let reason: string | undefined;
+	const command = worktrunkCommand();
+	if (!command) {
+		if (selection === "worktrunk") throw new Error(WORKTRUNK_WINDOWS_HINT);
+		return "native";
+	}
 	try {
 		const probeExitCodes = Array.from({ length: 256 }, (_, code) => code);
-		const version = await tx.command("wt", ["--version"], { maxBuffer: WORKTREE_COMMAND_OUTPUT_MAX_BYTES, acceptedExitCodes: probeExitCodes });
+		const version = await tx.command(command, ["--version"], { maxBuffer: WORKTREE_COMMAND_OUTPUT_MAX_BYTES, acceptedExitCodes: probeExitCodes });
 		if (version.status !== 0 || !/\b(?:wt\s+)?v?(\d+\.\d+(?:\.\d+)?)\b/i.test(version.stdout.trim())) reason = "Worktrunk is unavailable or returned an invalid version";
 		else {
-			const help = await tx.command("wt", ["switch", "--help"], { maxBuffer: WORKTREE_COMMAND_OUTPUT_MAX_BYTES, acceptedExitCodes: probeExitCodes });
+			const help = await tx.command(command, ["switch", "--help"], { maxBuffer: WORKTREE_COMMAND_OUTPUT_MAX_BYTES, acceptedExitCodes: probeExitCodes });
 			const missing = ["--create", "--base", "--no-cd", "--no-hooks", "--format"].filter((flag) => !`${help.stdout}\n${help.stderr}`.includes(flag));
 			if (help.status !== 0 || missing.length) reason = `Worktrunk switch capability unavailable: ${missing.join(", ")}`;
 		}
@@ -942,7 +950,9 @@ async function createWorktrunkWorktree(
 	const naming = buildWorktreeNaming({ runId, index, agent: agents?.[index], label: labels?.[index], task: tasks?.[index], branchPrefix });
 	const args = ["-C", toplevel, "switch", "--create", naming.requestedBranch, "--base", baseCommit, "--no-cd", "--no-hooks", "--format", "json"];
 	tx.attempt(index, naming.requestedBranch);
-	const result = await tx.command("wt", args, { cwd: toplevel, maxBuffer: WORKTREE_COMMAND_OUTPUT_MAX_BYTES });
+	const command = worktrunkCommand();
+	if (!command) throw new Error(WORKTRUNK_WINDOWS_HINT);
+	const result = await tx.command(command, args, { cwd: toplevel, maxBuffer: WORKTREE_COMMAND_OUTPUT_MAX_BYTES });
 	tx.progress.phase = "validation";
 	try {
 		const output = parseWorktrunkSwitchOutput(result.stdout);

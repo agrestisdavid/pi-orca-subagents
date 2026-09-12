@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pi Bots"
+  short_description: "Native Pi-Bots mit vollständigen Chats und Orca-Dispatch"
+  default_prompt: "Use $pi-bots for native pi-subagents profiles, FleetView and paginated read-only chats. Use coordination: orca when the user explicitly requests Orca-dispatched workflows; keep native process controls and canonical supervisor replies."

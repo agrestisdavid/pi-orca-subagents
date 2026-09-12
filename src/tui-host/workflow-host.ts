@@ -7,10 +7,12 @@ import { setChildSessionFactory } from "../runs/shared/child-session.ts";
 import { createTuiChildSessionFactory } from "./factory.ts";
 import { currentChildExecution } from "../api/child-execution.ts";
 import { registerWorkflowControl } from "./workflow-host-client.ts";
+import { getAgentDir } from '../shared/utils.ts';
 import { DIRS } from "../shared/types.ts";
 import { setWorkflowHostSessionIdentity } from "../shared/session-identity.ts";
-const root = process.argv[2],
-  config = readJson(path.join(root, "launch.json"));
+const root = process.argv[2]!;
+if (!root) throw new Error('Missing workflow control directory.');
+const config = readJson(path.join(root, "launch.json"));
 (globalThis as any)[Symbol.for("pi-subagents.completion-owner-id")] =
   config.completionOwnerId;
 setWorkflowHostSessionIdentity(config.sessionId);
@@ -38,7 +40,7 @@ setChildSessionFactory({
   },
 });
 let api: any;
-const native = (await import("../../index.ts")).default;
+const native = (await import("../../native.ts")).default;
 const bridge = {
   name: "pi-bots:native-workflow-owner",
   factory(extension: any) {
@@ -57,15 +59,15 @@ const bridge = {
     });
   },
 };
-const agentDir = path.dirname(config.execution.statusExtension);
+const agentDir = config.execution.agentDir || getAgentDir();
 const settingsManager = pi.SettingsManager.create(
   config.cwd,
-  path.dirname(agentDir),
+  agentDir,
 );
 const modelRuntime = await pi.ModelRuntime.create();
 const loader = new pi.DefaultResourceLoader({
   cwd: config.cwd,
-  agentDir: path.dirname(agentDir),
+  agentDir: agentDir,
   settingsManager,
   noExtensions: true,
   noSkills: true,
@@ -79,7 +81,7 @@ const resolved = config.model
   : undefined;
 const { session } = await pi.createAgentSession({
   cwd: config.cwd,
-  agentDir: path.dirname(agentDir),
+  agentDir: agentDir,
   settingsManager,
   modelRuntime,
   resourceLoader: loader,

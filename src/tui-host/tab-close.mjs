@@ -13,6 +13,65 @@ export function stopOnTabClose(settingsFile) {
   return value !== false;
 }
 
+// The shared dispatch tab is the workflow's own terminal; separately created
+// child tabs are not.
+export function isDispatchView(host, mapping) {
+  return !!(
+    host?.dispatchView &&
+    host?.view &&
+    mapping?.worker?.terminal?.paneKey &&
+    host.view.paneKey === mapping.worker.terminal.paneKey
+  );
+}
+
+// Existence checks must query the tab's own workspace: the shared dispatch
+// tab lives in the workflow area, separately created child tabs in the
+// child's launch directory. An inventory from the other workspace can never
+// prove that the tab was closed (create-beta regression).
+// The dispatch tab is created with --worktree <workflow cwd>, so
+// mapping.cwd is its Orca workspace. mapping.worker.dir is only the
+// adapter's state directory (never an Orca-known workspace) and must not
+// be used for existence probes (live-acceptance regression: the probe
+// returned selector_not_found for the whole 60 s cap).
+export function workspaceForView(host, mapping, launchCwd) {
+  return isDispatchView(host, mapping)
+    ? mapping.cwd || launchCwd
+    : launchCwd;
+}
+
+// Two consecutive confirmed absences on the same reachable Orca runtime
+// prove a close. 'present' and 'unknown' (connection error, runtime switch,
+// unreadable inventory) both break the streak of confirmed absences.
+export function createAbsenceTracker(originalRuntime) {
+  let missingCount = 0;
+  let observedRuntime = originalRuntime;
+  return {
+    // The runtime the tab was last positively observed in (or was expected in).
+    runtime() { return observedRuntime; },
+    // Feed one probe; 'present' must carry the current runtimeId.
+    probe(presence, runtimeId) {
+      if (presence === 'present') {
+        missingCount = 0;
+        if (runtimeId) observedRuntime = runtimeId;
+        return 'present';
+      }
+      if (presence === 'missing') {
+        missingCount += 1;
+        return missingCount >= 2 ? 'absent' : 'pending';
+      }
+      missingCount = 0;
+      return 'unknown';
+    },
+    // Positive evidence outside a probe (e.g. a view attached right now).
+    markObserved(runtimeId) {
+      if (runtimeId) {
+        observedRuntime = runtimeId;
+        missingCount = 0;
+      }
+    },
+  };
+}
+
 export function tabPresence(runtime, listed, view, originalRuntime) {
   if (runtime?.reachable !== true || !Array.isArray(listed?.terminals)) return 'unknown';
   const found = listed.terminals.some(t => t.tabId === view.tabId &&

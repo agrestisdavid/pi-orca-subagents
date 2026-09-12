@@ -3,6 +3,8 @@ import path from "node:path";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createAtomicJsonWriter } from "../shared/atomic-json.ts";
+import { resolveFileSystemRetryDelays } from "../shared/file-system-retry.ts";
 
 export const VERSION = 1;
 export const readJson = (file) => {
@@ -12,12 +14,19 @@ export const readJson = (file) => {
     return undefined;
   }
 };
-export function atomicJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = file + "." + randomUUID() + ".tmp";
-  fs.writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
-  fs.renameSync(temp, file);
-}
+// The TUI host exchanges status files on a hot path of a long-lived process.
+// The shared writer's default ladder can sleep ~7.9s, which would stall the
+// broker's event loop. Use the short four-step Windows ladder instead
+// (10/25/50/100ms, at most 185ms per exchange); a lower configured retry
+// budget (PI_SUBAGENT_FS_RETRY_MAX_TOTAL_MS) stays effective. Successful
+// writes never wait. Retry only applies to rename errors EPERM/EACCES/EBUSY
+// on Windows; the target file is never pre-deleted, and a persistent failure
+// rethrows the original error.
+export const TUI_RENAME_RETRY_DELAYS_MS = resolveFileSystemRetryDelays().slice(0, 4);
+export const atomicJson = createAtomicJsonWriter({
+  mode: 0o600,
+  retryDelaysMs: TUI_RENAME_RETRY_DELAYS_MS,
+});
 export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export function jsonSocket(socket, onMessage, onError = () => {}) {
   let pending = "";

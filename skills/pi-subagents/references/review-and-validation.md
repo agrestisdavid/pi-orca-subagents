@@ -14,6 +14,10 @@ Use the smallest loop that proves the change:
 6. Re-run affected validation and review only the changed blast radius.
 7. Inspect the final diff and evidence before parent acceptance.
 
+For a Scout → Worker → Review → fix-round loop use the tested reference
+template [../pos/templates/scout-worker-review.mjs](../pos/templates/scout-worker-review.mjs)
+(POS skill; scenarios covered by `test/pos/workflow-template.test.mjs`).
+
 Skip review ceremony for trivial wording, renames, or local-only probes when direct parent inspection is enough.
 
 ## Review shape
@@ -39,6 +43,25 @@ The parent classifies each finding against current HEAD:
 - **Speculative:** no contract, repro, or reachable failure. Do not block.
 
 A clean reviewer result is evidence, not publication authority.
+
+## Output contracts in review loops
+
+Keep execution status and the domain judgment apart:
+
+- A successfully delivered review with findings is a **successful execution**.
+  Present it as *Review completed – changes required*, not as a failed child.
+- Require the structured result (verdict, findings, evidence) as the only
+  contract surface. `structured_output` ends the child's turn, so every
+  mandatory artifact must be written **before** that call.
+- A Markdown report is a parent-side artifact generated from the structured
+  result afterwards. Never make the reviewer produce it as a second required
+  file.
+- If a contract explicitly required an additional file and it is missing,
+  report: *Output contract not fulfilled; structured result exists.* Keep the
+  structured result usable; do not fail the run for it.
+- Optional result fields are omitted or JSON-compatible; their absence must
+  not abort the loop. Infrastructure errors stop dependent steps; findings
+  drive the next fix round.
 
 ## Gate-failure triage
 

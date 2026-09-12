@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {stopOnTabClose,tabPresence,requestTabStop} from '../../src/tui-host/tab-close.mjs';
+import {stopOnTabClose,tabPresence,requestTabStop,workspaceForView,isDispatchView,createAbsenceTracker} from '../../src/tui-host/tab-close.mjs';
 import {atomicJson,readJson} from '../../src/tui-host/protocol.mjs';
 test('Closing defaults to stop; false and invalid settings cannot become true',()=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pi-close-policy-'));
@@ -22,6 +22,51 @@ test('Runtime outage, failed inventory and restart are not tab closes',()=>{
  assert.equal(tabPresence({reachable:true,runtimeId:'b'},empty,view,'a'),'unknown');
  assert.equal(tabPresence({reachable:true,runtimeId:'a'},empty,view,'a'),'missing');
  assert.equal(tabPresence({reachable:true,runtimeId:'b'},{terminals:[{...view,handle:'new'}]},view,'a'),'present');
+});
+test("Existence checks use the correct workspace per tab (create-beta regression)",()=>{
+ // The assigned dispatch tab belongs to the workflow area; the child works in
+ // its own worktree. The old code queried the child launch directory and
+ // misread the shared dispatch tab as closed.
+ // Live-acceptance regression: mapping.worker.dir is the adapter's state
+ // directory (not an Orca-known workspace) — the dispatch view must probe
+ // mapping.cwd, the worktree where the dispatch terminal was created.
+ const mapping={cwd:'C:/repo',worker:{dir:'C:/state/workflows/wf/workflow',terminal:{paneKey:'dispatch'}}};
+ const launchCwd='C:/repo-beta-0.3.5';
+ assert.equal(isDispatchView({dispatchView:true,view:{paneKey:'dispatch'}},mapping),true);
+ assert.equal(workspaceForView({dispatchView:true,view:{paneKey:'dispatch'}},mapping,launchCwd),'C:/repo');
+ // A separately created child tab is checked in its own launch directory.
+ assert.equal(isDispatchView({dispatchView:true,view:{paneKey:'child'}},mapping),false);
+ assert.equal(workspaceForView({dispatchView:true,view:{paneKey:'child'}},mapping,launchCwd),launchCwd);
+ assert.equal(workspaceForView({dispatchView:false,view:{paneKey:'child'}},mapping,launchCwd),launchCwd);
+ // Without a worker entry at all the workflow cwd identifies the area.
+ assert.equal(workspaceForView({dispatchView:true,view:{paneKey:'dispatch'}},{cwd:'C:/repo',worker:{terminal:{paneKey:'dispatch'}}},launchCwd),'C:/repo');
+ // Same identity in the right inventory is present; in the other worktree's
+ // inventory it must not be misread as closed by the tracker.
+ const view={tabId:'tab',paneKey:'tab:leaf',handle:'h'};
+ const tracker=createAbsenceTracker('rt-1');
+ assert.equal(tabPresence({reachable:true,runtimeId:'rt-1'},{terminals:[view]},view,tracker.runtime()),'present');
+ assert.equal(tracker.probe('present','rt-1'),'present');
+ assert.equal(tracker.probe('missing','rt-1'),'pending');
+ assert.equal(tracker.probe('missing','rt-1'),'absent');
+});
+test('Two consecutive confirmed absences prove a close; unknown breaks the streak',()=>{
+ const tracker=createAbsenceTracker('rt-1');
+ assert.equal(tracker.probe('missing','rt-1'),'pending');
+ // Runtime switch in between: absence in the new runtime is unknown and
+ // resets the confirmed-absence streak.
+ assert.equal(tracker.probe('unknown'),'unknown');
+ assert.equal(tracker.probe('missing'),'pending');
+ assert.equal(tracker.probe('missing'),'absent');
+ const fresh=createAbsenceTracker('rt-1');
+ fresh.probe('missing','rt-1');
+ assert.equal(fresh.probe('present','rt-2'),'present');
+ assert.equal(fresh.runtime(),'rt-2');
+ assert.equal(fresh.probe('missing'),'pending');
+ const detached=createAbsenceTracker('rt-1');
+ detached.probe('missing','rt-1');
+ detached.markObserved('rt-3');
+ assert.equal(detached.runtime(),'rt-3');
+ assert.equal(detached.probe('missing'),'pending');
 });
 test('Native stop targets only the owning child and does not redeliver consumed requests',()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'pi-close-delivery-'));

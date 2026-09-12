@@ -10,6 +10,7 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { dedupeBundledTodo } from '../../pos/resources.mjs';
 import { getAgentDir } from "../../shared/utils.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { prepareReadonlySessionEvidence } from "./readonly-session-evidence.ts";
@@ -213,6 +214,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				noThemes: true,
 				noContextFiles: launch.noContextFiles,
 				additionalExtensionPaths: launch.extensionPaths,
+                extensionsOverride: (base: any) => dedupeBundledTodo(base, launch.extensionPaths),
 				extensionFactories: launch.hooks,
 				...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
 				...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: [launch.appendSystemPrompt] } : {}),

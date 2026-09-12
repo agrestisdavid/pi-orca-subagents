@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { BeforeProviderRequestEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerNativeSupervisorClient } from "../../intercom/native-supervisor-channel.ts";
@@ -29,6 +30,7 @@ import {
 const STRUCTURED_OUTPUT_INSTRUCTIONS = [
 	"This subagent step has a strict structured output contract.",
 	"Your final action must be to call the `structured_output` tool with JSON matching the provided schema.",
+	"Calling `structured_output` ends your turn: every other mandatory artifact must already exist before that call.",
 	"Do not rely on prose-only completion; if you do not call `structured_output`, the parent will fail this step.",
 ].join("\n");
 
@@ -48,6 +50,29 @@ export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 	"The maxSubagentDepth cap still applies and may block further fanout.",
 	"If you need to edit files, use the available editing tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
+
+// Short, verified Windows execution context for every child (TUI and native).
+// Only paths that actually exist on this machine are named; nothing is
+// installed and no version is assumed.
+export function formatWindowsExecutionHint(cwd: string = process.cwd(), platform: NodeJS.Platform = process.platform): string {
+	if (platform !== "win32") return "";
+	const lines = [
+		"Windows execution context (verified on this machine):",
+		`- Node executable: ${process.execPath}; temporary directory: ${os.tmpdir()}.`,
+	];
+	const venvPython = path.join(cwd, ".venv", "Scripts", "python.exe");
+	try {
+		if (fs.existsSync(venvPython)) {
+			lines.push(`- A project interpreter exists at ${venvPython}; use it for Python work in this workspace.`);
+		}
+	} catch {}
+	lines.push(
+		"- Git Bash consumes and rewrites unescaped backslashes: quote Windows paths or use forward slashes when passing them to shell tools.",
+		"- MSYS paths such as /tmp/... or /c/Users/... are not Windows paths. Convert them (for example to the temp directory above or a C:\\... form) before passing them to Windows programs, Node, or Python.",
+		"- Do not install interpreters and do not assume a Python version; rely only on paths you verified exist.",
+	);
+	return `\n\n${lines.join("\n")}`;
+}
 
 const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-orchestration-instructions",
@@ -530,6 +555,10 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 				fanoutChild,
 				structuredOutput: Boolean(config.structuredOutput),
 			});
+		}
+		const windowsHint = formatWindowsExecutionHint();
+		if (windowsHint && !rewritten.includes("Windows execution context (verified on this machine):")) {
+			rewritten += windowsHint;
 		}
 		if (rewritten === event.systemPrompt) return;
 		return { systemPrompt: rewritten };

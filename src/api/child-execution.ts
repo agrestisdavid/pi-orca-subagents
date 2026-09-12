@@ -10,6 +10,8 @@ export interface ChildExecution {
   parentJournal: string;
   todoExtension: string;
   statusExtension: string;
+  /** Explicit Pi user directory, independent of the hook installation. */
+  agentDir?: string;
 }
 const selection = new AsyncLocalStorage<ChildExecution | undefined>();
 let runnerSelection: ChildExecution | undefined;
@@ -39,6 +41,7 @@ export function validateChildExecution(
     if (!fs.existsSync(file))
       throw new Error(`Orca TUI prerequisite is missing: ${file}`);
   }
+  if (v.agentDir !== undefined && (typeof v.agentDir !== "string" || !path.isAbsolute(v.agentDir))) throw new Error("childExecution.agentDir must be an absolute path.");
   return Object.freeze({
     version: 1,
     type: "orca-tui",
@@ -46,6 +49,7 @@ export function validateChildExecution(
     parentJournal: v.parentJournal,
     todoExtension: v.todoExtension,
     statusExtension: v.statusExtension,
+    ...(v.agentDir ? { agentDir: v.agentDir } : {}),
   });
 }
 export function currentChildExecution(): ChildExecution | undefined {
