@@ -56,6 +56,18 @@ branch therefore receives new commits; a fixed release tag or commit stays
 on that version. Reload Pi after updating and start fresh child sessions.
 No npm publication is needed.
 
+On Windows, enable long paths once in Pi's managed POS Git checkout. This
+allows Git to clean deeply nested dependencies during an update; otherwise
+Pi can report `git clean -fdx failed` / `Filename too long` after fetching.
+Use the installed package path shown by `pi list`:
+
+```sh
+git -C "<installed POS Git checkout>" config core.longpaths true
+```
+
+This setting applies only to that checkout. After fixing a failed update,
+run the update command again and reload Pi only after it succeeds.
+
 A local folder installation is a development checkout and is not updated by
 these commands. To switch an existing POS development installation to Git,
 finish active POS work, remove its local **package selection** with
