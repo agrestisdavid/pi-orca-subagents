@@ -34,7 +34,7 @@ const EPERM = Object.assign(new Error("EPERM: operation not permitted, rename"),
   code: "EPERM",
 });
 
-test("transient rename lock: retry until success, no tmp file left behind", async (t) => {
+test("transient rename lock: Windows retries; other platforms preserve the error", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pos-adapter-atomic-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -52,10 +52,16 @@ test("transient rename lock: retry until success, no tmp file left behind", asyn
     return originalRename(src, dest, cb);
   });
 
-  atomicJson(file, payload);
-  assert.equal(renameCalls, 3, "two EPERM retries then one successful rename");
-  const written = JSON.parse(fs.readFileSync(file, "utf8"));
-  assert.deepEqual(written, payload);
+  if (process.platform === "win32") {
+    atomicJson(file, payload);
+    assert.equal(renameCalls, 3, "two EPERM retries then one successful rename");
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), payload);
+  } else {
+    // The shared writer intentionally limits lock retries to Windows.
+    assert.throws(() => atomicJson(file, payload), (error) => error === EPERM);
+    assert.equal(renameCalls, 1, "permission errors on other platforms fail immediately");
+    assert.equal(fs.existsSync(file), false);
+  }
   const leftovers = fs.readdirSync(dir).filter((n) => n.endsWith(".tmp"));
   assert.deepEqual(leftovers, [], "temp files must be cleaned up");
 });
