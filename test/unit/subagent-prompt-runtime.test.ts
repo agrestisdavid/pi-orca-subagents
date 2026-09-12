@@ -1031,13 +1031,14 @@ describe("child system prompt windows hint injection", () => {
 		} as { on(event: string, handler: (payload: { systemPrompt: string }, ctx?: unknown) => { systemPrompt: string } | undefined): void }, childConfig());
 
 		assert.equal(typeof beforeAgentStart, "function");
-		const result = (await beforeAgentStart?.({ systemPrompt: "Base prompt." })) as { systemPrompt: string };
-		const occurrences = result.systemPrompt.match(/Windows execution context \(verified on this machine\):/g) ?? [];
+		const result = await beforeAgentStart?.({ systemPrompt: "Base prompt." });
 		if (process.platform === "win32") {
+			assert.ok(result);
+			const occurrences = result.systemPrompt.match(/Windows execution context \(verified on this machine\):/g) ?? [];
 			assert.equal(occurrences.length, 1);
 			assert.match(result.systemPrompt, /Node executable: /);
 		} else {
-			assert.equal(result.systemPrompt, "Base prompt.");
+			assert.equal(result, undefined, "an unchanged prompt does not need an event override");
 		}
 	});
 });
