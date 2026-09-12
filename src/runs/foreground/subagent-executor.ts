@@ -5961,9 +5961,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const paramsWithResolvedCwd = directParams.cwd === undefined ? directParams : { ...directParams, cwd: requestCwd };
 		const action = paramsWithResolvedCwd.action;
 		if(!process.env.PI_BOTS_WORKFLOW_HOST && ["status","steer","interrupt","stop"].includes(String(action)) && (paramsWithResolvedCwd.id||paramsWithResolvedCwd.runId||paramsWithResolvedCwd.dir)){
-			const location=resolveAsyncRunLocation(paramsWithResolvedCwd,DIRS.async,DIRS.results);
-			const id=location.resolvedId??paramsWithResolvedCwd.id??paramsWithResolvedCwd.runId;
-			const root=id?workflowControlRoot(resolveCurrentSessionId(ctx.sessionManager),id):undefined;
+			let location: ReturnType<typeof resolveAsyncRunLocation> | undefined;
+			try {
+				location=resolveAsyncRunLocation(paramsWithResolvedCwd,DIRS.async,DIRS.results);
+			} catch {
+				// Optional managed-host routing must not bypass the action's own
+				// authority checks or its normal invalid-target error result.
+			}
+			const id=location?.resolvedId??paramsWithResolvedCwd.id??paramsWithResolvedCwd.runId;
+			const root=location&&id?workflowControlRoot(resolveCurrentSessionId(ctx.sessionManager),id):undefined;
 			if(root){
 				const data=await callWorkflowHost(root,{version:1,requestId:"control-"+_id,method:action,params:{...paramsWithResolvedCwd,id}});
 				return {content:[{type:"text",text:data.text??JSON.stringify(data)}],details:data.details??{mode:"management",results:[]}};
@@ -6328,9 +6334,18 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				return withBudget(inspectSubagentStatus(paramsWithResolvedCwd, omitUndefinedProperties({ state: deps.state, nested: nestedScope, sessionRoots, abandonedSlotReleaseAfterMs: resolveAbandonedSlotReleaseAfterMs(deps.config.capacity?.abandonedSlotReleaseAfterMs) })));
 			}
 			if (action === "resume") {
+				let location: ReturnType<typeof resolveAsyncRunLocation> | undefined;
+				if (!currentChildExecution() || !process.env.PI_BOTS_WORKFLOW_HOST) {
+					try {
+						location = resolveAsyncRunLocation(paramsWithResolvedCwd, DIRS.async, DIRS.results);
+					} catch {
+						// The native resolver considers foreground and nested runs too and
+						// returns lookup errors as tool results before starting any writer.
+						return resumeAsyncRun(omitUndefinedProperties({ params: paramsWithResolvedCwd, requestCwd, ctx, deps, parentModel: requestParentModel, signal }));
+					}
+				}
 				if (!currentChildExecution()) {
-					const location = resolveAsyncRunLocation(paramsWithResolvedCwd, DIRS.async, DIRS.results);
-					if (location.asyncDir && fs.existsSync(path.join(location.asyncDir, "tui"))) {
+					if (location?.asyncDir && fs.existsSync(path.join(location.asyncDir, "tui"))) {
 						const status = readStatus(location.asyncDir);
 						if (status?.sessionId !== resolveCurrentSessionId(ctx.sessionManager)) throw new Error("Managed TUI resume requires its original parent session.");
 						const request: any = {params: {...paramsWithResolvedCwd, id: status.runId}, ctx, signal};
@@ -6340,8 +6355,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					}
 				}
 				if(!process.env.PI_BOTS_WORKFLOW_HOST){
-					const location=resolveAsyncRunLocation(paramsWithResolvedCwd,DIRS.async,DIRS.results);
-					const id=location.resolvedId??paramsWithResolvedCwd.id??paramsWithResolvedCwd.runId;
+					const id=location?.resolvedId??paramsWithResolvedCwd.id??paramsWithResolvedCwd.runId;
 					const root=id?workflowControlRoot(resolveCurrentSessionId(ctx.sessionManager),id):undefined;
 					if(root){const data=await callWorkflowHost(root,{version:1,requestId:"control-"+_id,method:"resume",params:{...paramsWithResolvedCwd,id,childExecution:currentChildExecution()}});return {content:[{type:"text",text:data.text}],details:data.details};}
 				}

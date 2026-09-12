@@ -1837,6 +1837,27 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		}
 	});
 
+	for (const action of ["status", "steer", "interrupt", "stop"] as const) {
+		it(`${action} rejects a mismatched target before managed-host routing`, async () => {
+			const runId = `managed-target-${action}-${Date.now()}`;
+			const dir = path.join(ASYNC_DIR, runId);
+			fs.mkdirSync(dir, { recursive: true });
+			const statusFile = path.join(dir, "status.json");
+			const original = JSON.stringify({ runId, mode: "workflow", state: "running", sessionId: "session-123", steps: [] });
+			fs.writeFileSync(statusFile, original);
+			try {
+				const { executor } = makeExecutor({ bridgeMode: "off", agents: [makeAgent("a")] });
+				const result = await executor.execute("invalid-managed-target", { action, dir, id: "different-workflow", message: "Follow up" }, new AbortController().signal, undefined, makeMinimalCtx(tempDir));
+				assert.equal(result.isError, true);
+				assert.match(result.content[0]?.text ?? "", action === "interrupt" ? /No interrupt-capable run/ : /does not match directory/);
+				assert.equal(fs.readFileSync(statusFile, "utf8"), original);
+				assert.deepEqual(fs.readdirSync(dir), ["status.json"]);
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
+
 	it("resume action reports async ambiguity even when foreground has one prefix match", async () => {
 		const base = `namespace-ambiguous-${Date.now()}`;
 		const foregroundSession = path.join(tempDir, "foreground-prefix.jsonl");

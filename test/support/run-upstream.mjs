@@ -26,9 +26,21 @@ for(const name of fs.readdirSync(path.join(root,'node_modules'))) {
     }
   } else if(fs.statSync(path.join(root,'node_modules',name)).isDirectory()) link(path.join(root,'node_modules',name),path.join(sandbox,'node_modules',name));
 }
+// Runtime fixtures use the fake host; a workflow's real `npm run typecheck`
+// must still validate POS against the supported SDK's actual TUI declarations.
+const tsconfigPath = path.join(sandbox,'tsconfig.json');
+const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath,'utf8'));
+tsconfig.compilerOptions.paths = {
+  ...tsconfig.compilerOptions.paths,
+  '@earendil-works/pi-coding-agent': [path.join(root,'node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts')],
+};
+fs.writeFileSync(tsconfigPath,JSON.stringify(tsconfig,null,2));
 const loader=suite==='unit'?'isolated-temp-root.mjs':'register-loader.mjs';
 const files = process.argv.slice(3);
-const child=spawn(process.execPath,['--experimental-strip-types','--import',`./test/support/${loader}`,'--test','--test-concurrency=4','--test-timeout=600000',...(files.length?files:[`test/${suite}/*.test.ts`])],{cwd:sandbox,env:{...process.env,TEMP:fixtureTemp,TMP:fixtureTemp,TMPDIR:fixtureTemp,APPDATA:path.join(fixtureTemp,'appdata')},stdio:'inherit',windowsHide:true});
+// Each async fixture starts more Node processes. Concurrent cold Windows
+// fixtures contend for startup I/O and miss the existing result deadlines.
+const concurrency = process.platform === 'win32' && suite === 'integration' ? 1 : 4;
+const child=spawn(process.execPath,['--experimental-strip-types','--import',`./test/support/${loader}`,'--test',`--test-concurrency=${concurrency}`,'--test-timeout=600000',...(files.length?files:[`test/${suite}/*.test.ts`])],{cwd:sandbox,env:{...process.env,TEMP:fixtureTemp,TMP:fixtureTemp,TMPDIR:fixtureTemp,APPDATA:path.join(fixtureTemp,'appdata')},stdio:'inherit',windowsHide:true});
 child.on('error',error=>{console.error(error);process.exitCode=1;});
 child.on('exit',code=>{
   process.exitCode=code??1;
